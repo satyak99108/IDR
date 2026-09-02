@@ -1,0 +1,16 @@
+# Core Computational & Data Libraries
+pandas>=2.0.0
+numpy>=1.24.0
+scipy>=1.10.0
+
+# Visualization & Reporting
+matplotlib>=3.7.0
+seaborn>=0.12.0
+
+# State Estimation & Sensor Fusion
+filterpy>=1.4.5
+
+# Optional: Deep Learning Framework
+# Only required if retraining the 1D-CNN from scratch (Phase 5).
+# Out-of-the-box inference uses pure NumPy via models/velocity_cnn_weights.npz.
+# tensorflow>=2.11.0

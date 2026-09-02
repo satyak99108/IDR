@@ -1,0 +1,80 @@
+# Python virtual environments & dependencies (memory-heavy)
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+.pytest_cache/
+.coverage
+htmlcov/
+*.log
+
+# Large Datasets (regenerable via scripts/download_dataset.py)
+data/raw/
+data/processed/*.csv
+data/processed/*.zip
+*.csv.gz
+*.tar.gz
+
+# Benchmark Results & Diagnostic Plot Artifacts (regenerable via scripts)
+results/
+
+# AI Model Binaries (heavy formats)
+models/*.h5
+models/*.keras
+models/*.tflite
+models/*.onnx
+# Preserve lightweight pre-extracted numpy weights & scaler params for zero-setup execution
+!models/velocity_cnn_weights.npz
+!models/scaler_params.json
+
+# Internal Specifications & Project Directives (as requested)
+MVP.md
+TECH_STACK.md
+
+# IDE & Editor Files
+.idea/
+.vscode/
+*.swp
+*.swo
+*.sublime-project
+*.sublime-workspace
+
+# Operating System Caches
+.DS_Store
+Thumbs.db
+ehthumbs.db
+desktop.ini
+
+# Secrets & Keys
+.env
+*.key
+*.pem
+
+# Mobile Build Artifacts & Reference Repos
+android/app/build/
+android/.gradle/
+mobile-app-ui-design/
