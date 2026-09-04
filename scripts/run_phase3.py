@@ -165,7 +165,7 @@ def get_initial_heading(df: pd.DataFrame, start_idx: int) -> float:
 def compute_drift_metrics(
     traj_df: pd.DataFrame,
     ref_df: pd.DataFrame,
-) -> dict:
+) -> tuple:
     """
     Computes position error and drift metrics between INS trajectory and ground truth.
 
@@ -174,42 +174,37 @@ def compute_drift_metrics(
         ref_df:   Reference DataFrame with ref_lat, ref_lon columns, aligned by index.
 
     Returns:
-        Dict with RMSE, MAE, max_error, final_error, total_distance, drift_percent.
+        Tuple of (metrics_dict, errors_array).
     """
-    errors_m = []
-    distances_m = []
+    n = min(len(traj_df), len(ref_df))
+    ins_lat = np.radians(traj_df["lat_deg"].to_numpy(dtype=float)[:n])
+    ins_lon = np.radians(traj_df["lon_deg"].to_numpy(dtype=float)[:n])
+    ref_lat = ref_df["ref_lat"].to_numpy(dtype=float)[:n]
+    ref_lon = ref_df["ref_lon"].to_numpy(dtype=float)[:n]
 
-    prev_lat_ref = None
-    prev_lon_ref = None
+    ref_lat_rad = np.radians(ref_lat)
+    ref_lon_rad = np.radians(ref_lon)
+    valid = ~(np.isnan(ref_lat_rad) | np.isnan(ref_lon_rad))
 
-    for i in range(len(traj_df)):
-        ins_lat = np.radians(traj_df["lat_deg"].iloc[i])
-        ins_lon = np.radians(traj_df["lon_deg"].iloc[i])
-        ref_lat = ref_df["ref_lat"].iloc[i]
-        ref_lon = ref_df["ref_lon"].iloc[i]
+    errors_m = np.full(n, np.nan)
+    if np.any(valid):
+        errors_m[valid] = haversine_distance(
+            ins_lat[valid], ins_lon[valid],
+            ref_lat_rad[valid], ref_lon_rad[valid]
+        )
 
-        if pd.isna(ref_lat) or pd.isna(ref_lon):
-            errors_m.append(np.nan)
-            distances_m.append(np.nan)
-            continue
+    valid_ref_lat = ref_lat_rad[valid]
+    valid_ref_lon = ref_lon_rad[valid]
+    if len(valid_ref_lat) > 1:
+        step_dists = haversine_distance(
+            valid_ref_lat[:-1], valid_ref_lon[:-1],
+            valid_ref_lat[1:], valid_ref_lon[1:]
+        )
+        total_dist = float(np.sum(step_dists))
+    else:
+        total_dist = 0.0
 
-        ref_lat_rad = np.radians(ref_lat)
-        ref_lon_rad = np.radians(ref_lon)
-
-        err = haversine_distance(ins_lat, ins_lon, ref_lat_rad, ref_lon_rad)
-        errors_m.append(err)
-
-        if prev_lat_ref is not None:
-            seg = haversine_distance(prev_lat_ref, prev_lon_ref, ref_lat_rad, ref_lon_rad)
-            distances_m.append(seg)
-        else:
-            distances_m.append(0.0)
-
-        prev_lat_ref = ref_lat_rad
-        prev_lon_ref = ref_lon_rad
-
-    errors_arr = np.array([e for e in errors_m if not np.isnan(e)])
-    total_dist  = float(np.nansum(distances_m))
+    errors_arr = errors_m[~np.isnan(errors_m)]
 
     if len(errors_arr) == 0:
         return {"error": "No valid reference positions found."}
@@ -233,19 +228,30 @@ def compute_drift_metrics(
 
 def compute_distance_series(ref_df: pd.DataFrame) -> np.ndarray:
     """Computes cumulative ground-truth distance array (metres) from ref_lat/ref_lon."""
-    lats = ref_df["ref_lat"].values
-    lons = ref_df["ref_lon"].values
-    cumulative = [0.0]
-    for i in range(1, len(lats)):
-        if pd.isna(lats[i]) or pd.isna(lons[i]) or pd.isna(lats[i-1]) or pd.isna(lons[i-1]):
-            cumulative.append(cumulative[-1])
-        else:
-            d = haversine_distance(
-                np.radians(lats[i-1]), np.radians(lons[i-1]),
-                np.radians(lats[i]),   np.radians(lons[i])
-            )
-            cumulative.append(cumulative[-1] + d)
-    return np.array(cumulative)
+    lats = ref_df["ref_lat"].to_numpy(dtype=float)
+    lons = ref_df["ref_lon"].to_numpy(dtype=float)
+    n = len(lats)
+    if n == 0:
+        return np.array([0.0])
+
+    lat_rad = np.radians(lats)
+    lon_rad = np.radians(lons)
+
+    valid_step = (
+        ~np.isnan(lat_rad[:-1]) & ~np.isnan(lon_rad[:-1]) &
+        ~np.isnan(lat_rad[1:])  & ~np.isnan(lon_rad[1:])
+    )
+
+    step_dists = np.zeros(n - 1)
+    if np.any(valid_step):
+        step_dists[valid_step] = haversine_distance(
+            lat_rad[:-1][valid_step], lon_rad[:-1][valid_step],
+            lat_rad[1:][valid_step],  lon_rad[1:][valid_step]
+        )
+
+    cumulative = np.zeros(n)
+    cumulative[1:] = np.cumsum(step_dists)
+    return cumulative
 
 
 # ---------------------------------------------------------------------------

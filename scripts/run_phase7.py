@@ -148,20 +148,23 @@ def compute_position_errors(traj_df: pd.DataFrame, ref_df: pd.DataFrame) -> np.n
     n = min(len(traj_df), len(ref_df))
     errors = np.full(n, np.nan)
 
-    for i in range(n):
-        ref_lat = ref_df.iloc[i].get("ref_lat", np.nan)
-        ref_lon = ref_df.iloc[i].get("ref_lon", np.nan)
-        if pd.isna(ref_lat) or pd.isna(ref_lon):
-            # Try gnss as fallback
-            ref_lat = ref_df.iloc[i].get("gnss_lat", np.nan)
-            ref_lon = ref_df.iloc[i].get("gnss_lon", np.nan)
-        if pd.isna(ref_lat) or pd.isna(ref_lon):
-            continue
+    ref_lat = ref_df["ref_lat"].to_numpy(dtype=float)[:n] if "ref_lat" in ref_df.columns else np.full(n, np.nan)
+    ref_lon = ref_df["ref_lon"].to_numpy(dtype=float)[:n] if "ref_lon" in ref_df.columns else np.full(n, np.nan)
 
-        ins_lat = np.radians(traj_df["lat_deg"].iloc[i])
-        ins_lon = np.radians(traj_df["lon_deg"].iloc[i])
-        errors[i] = haversine_distance(
-            ins_lat, ins_lon, np.radians(ref_lat), np.radians(ref_lon)
+    if "gnss_lat" in ref_df.columns and "gnss_lon" in ref_df.columns:
+        gnss_lat = ref_df["gnss_lat"].to_numpy(dtype=float)[:n]
+        gnss_lon = ref_df["gnss_lon"].to_numpy(dtype=float)[:n]
+        nan_mask = np.isnan(ref_lat) | np.isnan(ref_lon)
+        ref_lat = np.where(nan_mask, gnss_lat, ref_lat)
+        ref_lon = np.where(nan_mask, gnss_lon, ref_lon)
+
+    valid = ~(np.isnan(ref_lat) | np.isnan(ref_lon))
+    if np.any(valid):
+        ins_lat = np.radians(traj_df["lat_deg"].to_numpy(dtype=float)[:n])
+        ins_lon = np.radians(traj_df["lon_deg"].to_numpy(dtype=float)[:n])
+        errors[valid] = haversine_distance(
+            ins_lat[valid], ins_lon[valid],
+            np.radians(ref_lat[valid]), np.radians(ref_lon[valid])
         )
 
     return errors
@@ -177,14 +180,18 @@ def compute_drift_metrics(errors: np.ndarray, ref_df: pd.DataFrame) -> Dict[str,
     total_dist = 0.0
     for col_lat, col_lon in [("ref_lat", "ref_lon"), ("gnss_lat", "gnss_lon")]:
         if col_lat in ref_df.columns and not ref_df[col_lat].isna().all():
-            lats = ref_df[col_lat].values
-            lons = ref_df[col_lon].values
-            for i in range(1, len(lats)):
-                if not (pd.isna(lats[i]) or pd.isna(lats[i-1])):
-                    total_dist += haversine_distance(
-                        np.radians(lats[i-1]), np.radians(lons[i-1]),
-                        np.radians(lats[i]), np.radians(lons[i]),
-                    )
+            lats = ref_df[col_lat].to_numpy(dtype=float)
+            lons = ref_df[col_lon].to_numpy(dtype=float)
+            valid_step = (
+                ~np.isnan(lats[:-1]) & ~np.isnan(lons[:-1]) &
+                ~np.isnan(lats[1:])  & ~np.isnan(lons[1:])
+            )
+            if np.any(valid_step):
+                lat1 = np.radians(lats[:-1][valid_step])
+                lon1 = np.radians(lons[:-1][valid_step])
+                lat2 = np.radians(lats[1:][valid_step])
+                lon2 = np.radians(lons[1:][valid_step])
+                total_dist = float(np.sum(haversine_distance(lat1, lon1, lat2, lon2)))
             break
 
     return {
@@ -437,14 +444,11 @@ def plot_05_nhc_correction(
     speed_diff = np.abs(speed_b - speed_c)
 
     # Position difference
-    pos_diff = np.zeros(n)
-    for i in range(n):
-        pos_diff[i] = haversine_distance(
-            np.radians(traj_b["lat_deg"].iloc[i]),
-            np.radians(traj_b["lon_deg"].iloc[i]),
-            np.radians(traj_c["lat_deg"].iloc[i]),
-            np.radians(traj_c["lon_deg"].iloc[i]),
-        )
+    lat_b = np.radians(traj_b["lat_deg"].to_numpy(dtype=float)[:n])
+    lon_b = np.radians(traj_b["lon_deg"].to_numpy(dtype=float)[:n])
+    lat_c = np.radians(traj_c["lat_deg"].to_numpy(dtype=float)[:n])
+    lon_c = np.radians(traj_c["lon_deg"].to_numpy(dtype=float)[:n])
+    pos_diff = haversine_distance(lat_b, lon_b, lat_c, lon_c)
 
     ax.plot(time_s, pos_diff, color=PALETTE["nhc_corr"], linewidth=1.5,
             label="Position Difference B→C (m)")

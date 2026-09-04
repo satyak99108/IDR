@@ -337,14 +337,11 @@ def plot_04_position_error_timeline(
     time_s = np.arange(len(fused_df)) * 0.1
 
     # Compute continuous error
-    errors = np.zeros(len(fused_df))
-    for i in range(len(fused_df)):
-        errors[i] = haversine_distance(
-            np.radians(fused_df["lat_deg"].iloc[i]),
-            np.radians(fused_df["lon_deg"].iloc[i]),
-            np.radians(ref_df["ref_lat"].iloc[i]),
-            np.radians(ref_df["ref_lon"].iloc[i]),
-        )
+    fused_lat = np.radians(fused_df["lat_deg"].to_numpy(dtype=float))
+    fused_lon = np.radians(fused_df["lon_deg"].to_numpy(dtype=float))
+    ref_lat = np.radians(ref_df["ref_lat"].to_numpy(dtype=float))
+    ref_lon = np.radians(ref_df["ref_lon"].to_numpy(dtype=float))
+    errors = haversine_distance(fused_lat, fused_lon, ref_lat, ref_lon)
 
     ax.plot(time_s, errors, color=PALETTE["fused"], linewidth=1.8, label="Fused EKF Position Error (m)")
     ax.axvspan(outage_start_s, outage_end_s, color=PALETTE["outage_bg"], alpha=0.6, label="Tunnel Outage (60s)")
@@ -455,22 +452,20 @@ def main():
     ref_lon = df["ref_lon"].values
 
     # Full trip errors
-    full_errors = np.zeros(n_samples)
-    for i in range(n_samples):
-        full_errors[i] = haversine_distance(
-            np.radians(fused_df["lat_deg"].iloc[i]),
-            np.radians(fused_df["lon_deg"].iloc[i]),
-            np.radians(ref_lat[i]),
-            np.radians(ref_lon[i]),
-        )
+    fused_lat = np.radians(fused_df["lat_deg"].to_numpy(dtype=float)[:n_samples])
+    fused_lon = np.radians(fused_df["lon_deg"].to_numpy(dtype=float)[:n_samples])
+    r_lat_rad = np.radians(ref_lat[:n_samples])
+    r_lon_rad = np.radians(ref_lon[:n_samples])
+    full_errors = haversine_distance(fused_lat, fused_lon, r_lat_rad, r_lon_rad)
 
     # Tunnel Outage Window evaluation (The Core MVP Test!)
-    outage_dist = 0.0
-    for i in range(start_idx, end_idx):
-        outage_dist += haversine_distance(
-            np.radians(ref_lat[i]), np.radians(ref_lon[i]),
-            np.radians(ref_lat[i+1]), np.radians(ref_lon[i+1]),
-        )
+    outage_ref_lat = r_lat_rad[start_idx : end_idx + 1]
+    outage_ref_lon = r_lon_rad[start_idx : end_idx + 1]
+    outage_step_dists = haversine_distance(
+        outage_ref_lat[:-1], outage_ref_lon[:-1],
+        outage_ref_lat[1:],  outage_ref_lon[1:]
+    )
+    outage_dist = float(np.sum(outage_step_dists))
 
     outage_errors = full_errors[start_idx : end_idx + 1]
     outage_max_err = float(np.max(outage_errors))
