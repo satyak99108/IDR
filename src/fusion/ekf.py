@@ -55,9 +55,9 @@ class NavigationEKF(ExtendedKalmanFilter):
         self,
         q_pos: float = 0.05,       # Position process noise (m)
         q_vel: float = 0.20,       # Velocity process noise (m/s)
-        q_psi: float = 0.01,       # Heading process noise (rad)
+        q_psi: float = 0.02,       # Heading process noise (rad) — increased for MEMS gyro drift
         q_acc_bias: float = 1e-4,  # Accel bias random walk (m/s²)
-        q_gyro_bias: float = 1e-5, # Gyro bias random walk (rad/s)
+        q_gyro_bias: float = 5e-5, # Gyro bias random walk (rad/s) — increased for MEMS gyro
     ):
         super().__init__(dim_x=self.STATE_DIM, dim_z=5)
 
@@ -181,7 +181,7 @@ class NavigationEKF(ExtendedKalmanFilter):
             pn_new, pe_new, pd_new,
             vn_new, ve_new, vd_new,
             psi_new,
-            b_ax, b_ay, float(np.clip(b_gz, -0.002, 0.002)),
+            b_ax, b_ay, float(np.clip(b_gz, -0.05, 0.05)),
         ], dtype=np.float64)
 
         # 5. Jacobian of state transition matrix (F)

@@ -216,25 +216,16 @@ class GNSSINSFusionEngine:
             else:
                 self.mode = NavigationMode.GNSS_INS
 
-        # 2. Prediction Step (IMU or IMU + AI during blackout per MVP.md §12)
-        if self.mode == NavigationMode.DEAD_RECKONING and ai_speed is not None and not np.isnan(ai_speed):
-            self.ekf.predict_ai_dr(
-                dt=dt,
-                ai_forward_speed=ai_speed,
-                gz_veh=gz_veh,
-                gx_veh=gx_veh,
-                gy_veh=gy_veh,
-            )
-        else:
-            self.ekf.predict_imu(
-                dt=dt,
-                ax_lin=ax_lin,
-                ay_lin=ay_lin,
-                az_lin=az_lin,
-                gz_veh=gz_veh,
-                gx_veh=gx_veh,
-                gy_veh=gy_veh,
-            )
+        # 2. Prediction Step (IMU-driven in all modes for proper Jacobian/covariance propagation)
+        self.ekf.predict_imu(
+            dt=dt,
+            ax_lin=ax_lin,
+            ay_lin=ay_lin,
+            az_lin=az_lin,
+            gz_veh=gz_veh,
+            gx_veh=gx_veh,
+            gy_veh=gy_veh,
+        )
 
         # 3. Measurement Updates
         if has_gnss_fix:
@@ -267,9 +258,6 @@ class GNSSINSFusionEngine:
             if spd > 1.5 and gnss_course_deg is not None and not np.isnan(gnss_course_deg):
                 self.ekf.update_gnss_heading(crs_rad, heading_std_rad=np.radians(4.0))
 
-            # Apply Non-Holonomic Constraints (NHC)
-            self.ekf.update_nhc(lateral_std=0.15, vertical_std=0.20)
-
             # Update tracked geodetic coordinates
             p_n_curr, p_e_curr, p_d_curr = self.ekf.position_ned
             lat_curr, lon_curr, alt_curr = self.ned_to_geodetic(p_n_curr, p_e_curr, p_d_curr)
@@ -277,6 +265,14 @@ class GNSSINSFusionEngine:
             self._curr_lon_deg = lon_curr
         else:
             # During blackout (DEAD_RECKONING):
+            # Apply AI velocity as a proper EKF measurement update (not direct override)
+            # This lets the Kalman gain weight AI prediction vs propagated uncertainty
+            if ai_speed is not None and not np.isnan(ai_speed):
+                self.ekf.update_ai_velocity(
+                    v_forward_meas=max(0.0, ai_speed),
+                    vel_std=0.15,  # Strong weight on AI speed to prevent IMU acceleration bias drag
+                )
+
             # Propagate geodetic position directly to prevent tangent-plane distortion
             vn_curr, ve_curr, _ = self.ekf.velocity_ned
             if self._curr_lat_deg is not None and self._curr_lon_deg is not None:
@@ -299,7 +295,12 @@ class GNSSINSFusionEngine:
                 self._curr_lat_deg = lat_curr
                 self._curr_lon_deg = lon_curr
 
-        # 4. Extract current fused estimate
+        # 4. Non-Holonomic Constraints (ALL modes — critical during DR to prevent lateral drift)
+        # Rigid lateral constraint during DR: vehicle cannot slide sideways on road
+        nhc_lat_std = 0.03 if self.mode == NavigationMode.DEAD_RECKONING else 0.15
+        self.ekf.update_nhc(lateral_std=nhc_lat_std, vertical_std=0.20)
+
+        # 5. Extract current fused estimate
         p_n_curr, p_e_curr, p_d_curr = self.ekf.position_ned
         lat_curr, lon_curr, alt_curr = self.ned_to_geodetic(p_n_curr, p_e_curr, p_d_curr)
         vn_curr, ve_curr, vd_curr = self.ekf.velocity_ned
