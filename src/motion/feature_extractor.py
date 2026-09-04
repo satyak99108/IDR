@@ -227,8 +227,7 @@ class MotionFeatureExtractor:
             jerk_rms = 0.0
 
         # --- Frequency-domain features ---
-        freq_energy_ratio = self._freq_energy_ratio(accel_mag)
-        sp_entropy = self._spectral_entropy(accel_mag)
+        freq_energy_ratio, sp_entropy = self._spectral_features(accel_mag)
 
         return np.array([
             accel_mean,
@@ -246,13 +245,13 @@ class MotionFeatureExtractor:
     # Spectral helpers (SciPy)
     # ------------------------------------------------------------------
 
-    def _freq_energy_ratio(self, signal_1d: np.ndarray) -> float:
+    def _spectral_features(self, signal_1d: np.ndarray) -> Tuple[float, float]:
         """
-        Ratio of energy above ``high_freq_cutoff`` to total energy.
+        Compute frequency energy ratio and spectral entropy in a single Welch PSD pass.
 
-        Uses ``scipy.signal.welch`` for stable PSD estimation even on short
-        windows.  Returns 0.0 if the window is too short for meaningful
-        spectral analysis.
+        Returns
+        -------
+        (freq_energy_ratio, spectral_entropy)
         """
         w = len(signal_1d)
         nperseg = min(w, max(4, w))  # At least 4 points
@@ -266,54 +265,33 @@ class MotionFeatureExtractor:
                 detrend="constant",
             )
         except ValueError:
-            return 0.0
+            return 0.0, 0.0
 
         total_energy = np.sum(psd)
         if total_energy < 1e-12:
-            return 0.0
+            return 0.0, 0.0
 
+        # Frequency energy ratio
         high_mask = freqs >= self.high_freq_cutoff
         high_energy = np.sum(psd[high_mask])
+        ratio = float(high_energy / total_energy)
 
-        return float(high_energy / total_energy)
+        # Spectral entropy
+        p = psd / total_energy
+        p = p[p > 0]
+        entropy = -np.sum(p * np.log2(p))
+        max_entropy = np.log2(len(psd)) if len(psd) > 1 else 1.0
+        sp_entropy = float(entropy / max_entropy) if max_entropy > 0 else 0.0
+
+        return ratio, sp_entropy
+
+    def _freq_energy_ratio(self, signal_1d: np.ndarray) -> float:
+        """Ratio of energy above ``high_freq_cutoff`` to total energy."""
+        return self._spectral_features(signal_1d)[0]
 
     def _spectral_entropy(self, signal_1d: np.ndarray) -> float:
-        """
-        Normalized Shannon entropy of the power spectral density.
-
-        Values close to 1.0 indicate broadband noise (vibration); values close
-        to 0.0 indicate energy concentrated at few frequencies (structured
-        motion).
-        """
-        w = len(signal_1d)
-        nperseg = min(w, max(4, w))
-
-        try:
-            _, psd = sig.welch(
-                signal_1d,
-                fs=self.fs,
-                nperseg=nperseg,
-                noverlap=nperseg // 2,
-                detrend="constant",
-            )
-        except ValueError:
-            return 0.0
-
-        # Normalize PSD to a probability distribution
-        total = np.sum(psd)
-        if total < 1e-12:
-            return 0.0
-
-        p = psd / total
-        # Replace zeros to avoid log(0)
-        p = p[p > 0]
-
-        entropy = -np.sum(p * np.log2(p))
-
-        # Normalize by max possible entropy (uniform distribution over N bins)
-        max_entropy = np.log2(len(psd)) if len(psd) > 1 else 1.0
-
-        return float(entropy / max_entropy) if max_entropy > 0 else 0.0
+        """Normalized Shannon entropy of the power spectral density."""
+        return self._spectral_features(signal_1d)[1]
 
     # ------------------------------------------------------------------
     # Column resolution helpers

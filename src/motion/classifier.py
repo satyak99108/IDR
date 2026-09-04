@@ -174,10 +174,52 @@ class MotionClassifier:
         -------
         pd.Series of MotionLabel (int-valued), aligned to ``feature_df.index``.
         """
-        labels = np.empty(len(feature_df), dtype=np.int32)
+        n = len(feature_df)
+        labels = np.full(n, int(MotionLabel.NORMAL), dtype=np.int32)
+        if n == 0:
+            return pd.Series(labels, index=feature_df.index, name="motion_label")
 
-        for i, (_, row) in enumerate(feature_df.iterrows()):
-            labels[i] = int(self.classify_window(row.to_dict()))
+        t = self.thresholds
+
+        accel_var = feature_df["accel_var"].to_numpy(dtype=float) if "accel_var" in feature_df.columns else np.zeros(n)
+        accel_mean = feature_df["accel_mean"].to_numpy(dtype=float) if "accel_mean" in feature_df.columns else np.full(n, 9.81)
+        accel_peak = feature_df["accel_peak"].to_numpy(dtype=float) if "accel_peak" in feature_df.columns else np.zeros(n)
+        gyro_rms = feature_df["gyro_rms"].to_numpy(dtype=float) if "gyro_rms" in feature_df.columns else np.zeros(n)
+        gyro_peak = feature_df["gyro_peak"].to_numpy(dtype=float) if "gyro_peak" in feature_df.columns else np.zeros(n)
+        jerk_rms = feature_df["jerk_rms"].to_numpy(dtype=float) if "jerk_rms" in feature_df.columns else np.zeros(n)
+        freq_energy = feature_df["freq_energy_ratio"].to_numpy(dtype=float) if "freq_energy_ratio" in feature_df.columns else np.zeros(n)
+        sp_entropy = feature_df["spectral_entropy"].to_numpy(dtype=float) if "spectral_entropy" in feature_df.columns else np.zeros(n)
+
+        # Priority 4: STATIONARY — vehicle idle
+        mask_stationary = (
+            (accel_var <= t.stationary_accel_var_max) &
+            (gyro_rms <= t.stationary_gyro_rms_max) &
+            (accel_mean >= t.stationary_accel_mean_min) &
+            (accel_mean <= t.stationary_accel_mean_max)
+        )
+        labels[mask_stationary] = int(MotionLabel.STATIONARY)
+
+        # Priority 3: VIBRATION — sustained high-frequency noise
+        mask_vibration = (
+            (freq_energy >= t.vibration_freq_energy_ratio_min) &
+            (sp_entropy >= t.vibration_spectral_entropy_min) &
+            (accel_var >= t.vibration_accel_var_min)
+        )
+        labels[mask_vibration] = int(MotionLabel.VIBRATION)
+
+        # Priority 2: SHOCK — sudden impact / pothole
+        mask_shock = (
+            (jerk_rms >= t.shock_jerk_rms_min) &
+            (accel_peak >= t.shock_accel_peak_min)
+        )
+        labels[mask_shock] = int(MotionLabel.SHOCK)
+
+        # Priority 1: ABNORMAL — extreme phone motion
+        mask_abnormal = (
+            (gyro_peak >= t.abnormal_gyro_peak_min) &
+            (accel_peak >= t.abnormal_accel_peak_min)
+        )
+        labels[mask_abnormal] = int(MotionLabel.ABNORMAL)
 
         return pd.Series(labels, index=feature_df.index, name="motion_label")
 
@@ -185,6 +227,7 @@ class MotionClassifier:
         self,
         source_df: pd.DataFrame,
         feature_df: pd.DataFrame,
+        window_labels: Optional[pd.Series] = None,
     ) -> pd.Series:
         """
         Propagate per-window labels back to every sample in the source
@@ -199,6 +242,8 @@ class MotionClassifier:
             Original IMU DataFrame (N rows).
         feature_df : pd.DataFrame
             Feature DataFrame with ``window_start_idx`` and ``window_end_idx``.
+        window_labels : Optional[pd.Series], optional
+            Precomputed window labels. If None, computed from ``feature_df``.
 
         Returns
         -------
@@ -206,17 +251,23 @@ class MotionClassifier:
         """
         n = len(source_df)
         sample_labels = np.full(n, int(MotionLabel.NORMAL), dtype=np.int32)
+        if len(feature_df) == 0:
+            return pd.Series(sample_labels, index=source_df.index, name="motion_label")
 
-        window_labels = self.classify_feature_dataframe(feature_df)
+        if window_labels is None:
+            window_labels = self.classify_feature_dataframe(feature_df)
 
-        for i, (_, row) in enumerate(feature_df.iterrows()):
-            start = int(row["window_start_idx"])
-            end = int(row["window_end_idx"]) + 1  # inclusive → exclusive
-            end = min(end, n)
-            label = int(window_labels.iloc[i])
+        start_indices = feature_df["window_start_idx"].to_numpy(dtype=np.int64)
+        end_indices = feature_df["window_end_idx"].to_numpy(dtype=np.int64)
+        win_labels = window_labels.to_numpy(dtype=np.int32)
+
+        for i in range(len(feature_df)):
+            label = win_labels[i]
             # Higher-priority (larger enum value for non-NORMAL) overwrites
             # lower-priority labels.  NORMAL (0) never overwrites anything.
             if label != int(MotionLabel.NORMAL):
+                start = start_indices[i]
+                end = min(int(end_indices[i]) + 1, n)
                 mask = sample_labels[start:end] < label
                 sample_labels[start:end] = np.where(mask, label, sample_labels[start:end])
 

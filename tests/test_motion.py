@@ -303,6 +303,54 @@ class TestEndToEnd(unittest.TestCase):
         self.assertGreater(normal_pct, 0.5,
                            f"Expected majority NORMAL, got {normal_pct:.1%}")
 
+    def test_vectorized_classify_matches_scalar(self):
+        """Vectorized classify_feature_dataframe must match scalar classify_window exactly."""
+        np.random.seed(42)
+        n = 500
+        classifier = MotionClassifier()
+        t = classifier.thresholds
+
+        # Generate wide feature ranges to hit all motion categories
+        feat_df = pd.DataFrame({
+            "accel_var": np.random.uniform(0, t.vibration_accel_var_min * 3, n),
+            "accel_mean": np.random.uniform(t.stationary_accel_mean_min - 2, t.stationary_accel_mean_max + 2, n),
+            "accel_peak": np.random.uniform(0, t.abnormal_accel_peak_min * 1.5, n),
+            "gyro_rms": np.random.uniform(0, t.stationary_gyro_rms_max * 3, n),
+            "gyro_peak": np.random.uniform(0, t.abnormal_gyro_peak_min * 1.5, n),
+            "jerk_rms": np.random.uniform(0, t.shock_jerk_rms_min * 2, n),
+            "freq_energy_ratio": np.random.uniform(0, 1.0, n),
+            "spectral_entropy": np.random.uniform(0, 1.0, n),
+        })
+
+        vectorized_labels = classifier.classify_feature_dataframe(feat_df)
+        scalar_labels = [int(classifier.classify_window(row.to_dict())) for _, row in feat_df.iterrows()]
+
+        self.assertEqual(list(vectorized_labels), scalar_labels)
+
+    def test_label_source_dataframe_reused_window_labels(self):
+        """label_source_dataframe with precomputed labels matches default execution."""
+        extractor = MotionFeatureExtractor(sampling_rate_hz=10.0, window_size_sec=1.0, step_size_sec=0.5)
+        accel = np.random.randn(100, 3)
+        gyro = np.random.randn(100, 3) * 0.1
+        feat_df = extractor.extract(accel, gyro)
+        dummy_source = pd.DataFrame(index=np.arange(100))
+
+        classifier = MotionClassifier()
+        win_labels = classifier.classify_feature_dataframe(feat_df)
+
+        labels_default = classifier.label_source_dataframe(dummy_source, feat_df)
+        labels_reused = classifier.label_source_dataframe(dummy_source, feat_df, window_labels=win_labels)
+
+        pd.testing.assert_series_equal(labels_default, labels_reused)
+
+    def test_spectral_features_consistency(self):
+        """_spectral_features must yield identical results to helper functions."""
+        extractor = MotionFeatureExtractor(sampling_rate_hz=10.0)
+        sig = np.random.randn(50)
+        ratio, entropy = extractor._spectral_features(sig)
+        self.assertAlmostEqual(ratio, extractor._freq_energy_ratio(sig))
+        self.assertAlmostEqual(entropy, extractor._spectral_entropy(sig))
+
 
 if __name__ == "__main__":
     unittest.main()

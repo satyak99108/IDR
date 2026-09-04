@@ -469,8 +469,8 @@ def main():
     # Per-window labels
     window_labels = classifier.classify_feature_dataframe(feature_df)
 
-    # Propagate to per-sample labels
-    sample_labels = classifier.label_source_dataframe(df, feature_df)
+    # Propagate to per-sample labels (reuse precomputed window_labels)
+    sample_labels = classifier.label_source_dataframe(df, feature_df, window_labels=window_labels)
 
     # Trust weights
     trust_weights = classifier.get_trust_weights_series(sample_labels)
