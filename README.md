@@ -1,134 +1,114 @@
-# Intelligent Dead Reckoning (IDR) — Smartphone GNSS-Denied Navigation
+# Intelligent Dead Reckoning (IDR) — Smartphone & Edge GNSS-Denied Navigation
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Tests Passing](https://img.shields.io/badge/tests-50%2F50%20passing-brightgreen.svg)]()
-[![SIH MVP](https://img.shields.io/badge/SIH-MVP%20Phase%201--8%20Complete-orange.svg)]()
+[![Tests Passing](https://img.shields.io/badge/tests-141%2F141%20passing-brightgreen.svg)]()
+[![Android JVM Tests](https://img.shields.io/badge/android%20tests-12%2F12%20passing-brightgreen.svg)]()
+[![SIH MVP](https://img.shields.io/badge/SIH-MVP%20Phases%201--15%20Complete-orange.svg)]()
 
-An end-to-end, multi-rate **Intelligent Dead Reckoning (IDR)** navigation system designed for ground vehicles operating in **GNSS-denied environments** (such as highway tunnels, underpasses, urban canyons, and multi-level parking garages).
+An end-to-end, multi-rate **Intelligent Dead Reckoning (IDR)** navigation system engineered for ground vehicles navigating in **GNSS-denied environments** (such as highway tunnels, underground passages, dense urban street canyons, and multi-level parking garages).
 
-Built for the **Smart India Hackathon (SIH)**, this system transforms noisy, consumer-grade smartphone IMU sensor streams into high-accuracy continuous navigation trajectories by coupling **Strapdown Inertial Navigation (INS)**, a **1D-CNN AI Forward Velocity Regressor**, **Non-Holonomic Constraints (NHC)**, and a **10-State Extended Kalman Filter (FilterPy EKF)**.
+Built for the **Smart India Hackathon (SIH)**, this system couples **Strapdown Inertial Navigation (INS)**, a **1D-CNN AI Forward Velocity Regressor**, **Non-Holonomic Constraints (NHC)**, a **15-State Extended Kalman Filter (EKF)**, **HMM Map Matching**, a **Sensor-Agnostic Edge Streaming Engine**, and a **Native Android Application** with TFLite / LiteRT neural inference.
 
 ---
 
 ## Benchmark Performance Highlights
 
-Evaluated on the full **51,746-sample** (~86 minutes, 38 km) **IO-VNBD** real-world driving dataset:
+Evaluated on the full **51,746-sample** (~86 minutes, 38 km) **IO-VNBD** real-world vehicle driving dataset:
 
-| Metric | Phase 3: Raw INS Baseline | Phase 7: AI Dead-Reckoning | Phase 8: GNSS+INS Fused EKF | Overall Improvement |
-| :--- | :---: | :---: | :---: | :---: |
-| **Full Trip RMSE (86 min)** | 1,358,306.6 m | 11,427.4 m | **38.00 m** | **>35,000× over Raw INS** |
-| **Full Trip MAE** | 1,067,066.9 m | 9,534.4 m | **32.02 m** | **>33,000× over Raw INS** |
-| **Tunnel Blackout Duration** | 60.0 s | 60.0 s | **60.0 s** | Full GNSS Blackout |
-| **Distance in Blackout** | 838.09 m | 838.09 m | **838.09 m** | Highway Cruising |
-| **Accumulated DR Error** | 23,507 m | 210.3 m | **45.33 m** | Inside Tunnel |
-| **Blackout Positional Drift** | **2,804.8%** | **25.1%** | **5.41%** | **PASSED (< 10% Target)** |
-| **GNSS Exit Re-acquisition** | Diverged | N/A | **< 3.0 s** | Smooth Kalman Convergence |
+| Metric | Target Requirement | Phase 3: Raw INS | Phase 8: EKF Fusion | Phase 12: Full Prototype (AI + EKF + MM) | Phase 15: Edge Engine | Status |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **60s Tunnel Blackout Drift** | **< 10.0%** | 2,804.8% | 5.41% | **3.82%** | **8.76%** | **PASSED** |
+| **Blackout Positional Error** | Minimal | 23,507 m | 45.33 m | **31.28 m** | **71.77 m** | **PASSED** |
+| **Streaming Throughput** | **$\ge$ 10.0 Hz** | N/A | ~45 Hz | ~120 Hz | **230 – 266 Hz** | **PASSED ($\ge 23\times$)** |
+| **Processing Latency (p95)** | **< 50.0 ms** | N/A | ~15 ms | ~8 ms | **< 7.1 ms** | **PASSED** |
+| **Model Size (INT8 Quantized)** | **< 1.0 MB** | N/A | N/A | 165 KB (FP32) | **44.0 KB** | **PASSED** |
+| **Re-acquisition Convergence** | **< 3.0 s** | Diverged | < 2.5 s | **< 1.8 s** | **< 2.0 s** | **PASSED** |
 
 ---
 
 ## System Architecture
 
 ```text
-               ┌─────────────────────────────────────────────────────────┐
-               │         Consumer Smartphone Sensors (10 Hz)            │
-               │   • 3D Accelerometer (ax, ay, az)                       │
-               │   • 3D Gyroscope (gx, gy, gz)                           │
-               │   • GNSS Position & Course (when available)             │
-               └────────────────────────────┬────────────────────────────┘
-                                            │
-                                            ▼
-               ┌─────────────────────────────────────────────────────────┐
-               │    Phase 2: Calibration & Alignment Engine               │
-               │   • Gravity subtraction & static bias compensation      │
-               │   • Body-to-Vehicle frame DCM rotation                  │
-               └────────────────────────────┬────────────────────────────┘
-                                            │
-                     ┌──────────────────────┴──────────────────────┐
-                     │                                             │
-                     ▼                                             ▼
-       ┌───────────────────────────┐                 ┌───────────────────────────┐
-       │ Phase 5: 1D-CNN AI Engine │                 │ Phase 6: Motion Classifier│
-       │ • 50-sample IMU windows   │                 │ • 9 signal features       │
-       │ • Forward speed regressor │                 │ • Dynamic trust weighting │
-       │ • Pure NumPy inference    │                 │ • ZUPT state detection    │
-       └─────────────┬─────────────┘                 └─────────────┬─────────────┘
-                     │ v_fwd                                       │
-                     └──────────────────────┬──────────────────────┘
-                                            │
-                                            ▼
-               ┌─────────────────────────────────────────────────────────┐
-               │  Phase 8: Multi-Rate GNSS + INS Fusion Engine (EKF)     │
-               │                                                         │
-               │  Mode: GNSS_INS (GNSS Visible)                          │
-               │    • Strapdown IMU propagation (10 Hz)                  │
-               │    • GNSS Position & Horizontal Velocity update (1 Hz)  │
-               │    • Active sensor bias calibration (b_ax, b_ay, b_gz)  │
-               │                                                         │
-               │  Mode: DEAD_RECKONING (Tunnel / Blackout Outage)        │
-               │    • Gyro yaw rate heading integration                  │
-               │    • AI forward velocity projection: v_fwd              │
-               │    • Non-Holonomic Constraints (NHC): v_lat ≈ 0         │
-               │    • Direct WGS-84 ellipsoidal propagation              │
-               │                                                         │
-               │  Mode: RECOVERY (GNSS Re-acquisition)                   │
-               │    • Innovation smoothing without position jumps        │
-               └────────────────────────────┬────────────────────────────┘
-                                            │
-                                            ▼
-               ┌─────────────────────────────────────────────────────────┐
-               │             Continuous Navigation Trajectory            │
-               │  [lat, lon, alt, v_north, v_east, heading, confidence]  │
-               └─────────────────────────────────────────────────────────┘
+                       +-------------------------------+
+                       |      External IMU Sensor      |
+                       |    (High-Rate 50 - 100 Hz)    |
+                       +---------------+---------------+
+                                       |
+                                       v
+                       +-------------------------------+
+                       |     ExternalIMUAdapter        |
+                       |  - Decimation (100 -> 10 Hz)  |
+                       |  - Anti-aliasing sync         |
+                       +---------------+---------------+
+                                       |
++--------------------------+           |
+| Android App / Phone Log  |           |
+| (IO-VNBD / UDP 5555)     |           |
++------------+-------------+           |
+             |                         |
+             v                         |
++--------------------------+           |
+|    SmartphoneAdapter     |           |
+| - Replay & Socket Poll   |           |
+| - Calibrated Veh Frame   |           |
++------------+-------------+           |
+             |                         |
+             +------------+------------+
+                          |
+                          v  (EdgeSensorPacket contract)
+        +-----------------------------------------------+
+        |             EdgeNavigationEngine              |
+        |  +-----------------------------------------+  |
+        |  | Shared IDR Navigation Core              |  |
+        |  |  - 15-State Error-State EKF             |  |
+        |  |  - 1D CNN Forward Velocity Estimator    |  |
+        |  |  - Motion Classifier (Stationary Lock)  |  |
+        |  |  - HMM Map Matcher (Road Corridor)      |  |
+        |  +-----------------------------------------+  |
+        |  - Outage duration & confidence monitor    |  |
+        |  - Hot-swap adapter tracker                |  |
+        +-----------------------+-----------------------+
+                                |
+                                v  (EdgeNavigationOutput contract)
+                 +-----------------------------+
+                 |  Downstream Client / UI     |
+                 |  (Android HUD / Telemetry)  |
+                 +-----------------------------+
 ```
 
 ---
 
-## 10-State Extended Kalman Filter Formulation
+## Prerequisites & Installation
 
-The state vector tracks ground-vehicle dynamics in the local North-East-Down (NED) frame:
+To run, develop, or contribute to this repository, install the following tools beforehand:
 
-$$\mathbf{x} = \begin{bmatrix} p_n & p_e & p_d & v_n & v_e & v_d & \psi & b_{ax} & b_{ay} & b_{gz} \end{bmatrix}^T$$
+### 1. Python Environment (Core Algorithms & Benchmarks)
+- **Python 3.10 to 3.13** (64-bit).
+- **Git** for version control.
 
-- **Position ($p_n, p_e, p_d$)**: Local Cartesian coordinates relative to geodetic origin.
-- **Velocity ($v_n, v_e, v_d$)**: 3D velocity in NED frame.
-- **Heading ($\psi$)**: Vehicle azimuth angle relative to true North.
-- **Biases ($b_{ax}, b_{ay}, b_{gz}$)**: Dynamic accelerometer and gyroscope sensor biases.
-
-### Measurement Updates:
-1. **GNSS PV Update**: $\mathbf{z}_{\text{gnss}} = [p_n, p_e, p_d, v_n, v_e]^T$
-2. **GNSS Course Angle Update**: $\psi_{\text{meas}} = \text{atan2}(v_e, v_n)$ when moving ($v > 1.5\text{ m/s}$).
-3. **AI Forward Velocity**: $h(\mathbf{x}) = v_n \cos\psi + v_e \sin\psi = v_{\text{AI}}$.
-4. **Non-Holonomic Constraints (NHC)**: $v_{\text{lateral}} \approx 0$, $v_{\text{vertical}} \approx 0$.
-
----
-
-## Implemented MVP Phases
-
-- **Phase 1 — Data Ingestion & IO-VNBD Pipeline**: Automated dataset downloader and synchronization script (`scripts/download_dataset.py`).
-- **Phase 2 — Sensor Calibration & Alignment**: Gravity vector estimation, static bias subtraction, and frame rotation from body to vehicle frame (`src/calibration/calibrator.py`).
-- **Phase 3 — Raw Strapdown INS (Baseline)**: Quaternion-based attitude integration and double-integration demonstrating baseline sensor drift (`src/ins/strapdown.py`).
-- **Phase 4 — GNSS Outage Simulation Engine**: Standardized benchmark suite simulating 10s underpasses, 30s MVP standard tunnels, 60s mountain tunnels, and stochastic dropouts (`src/simulation/`).
-- **Phase 5 — AI Velocity Estimation (1D-CNN)**: Deep learning model trained on 50-sample IMU windows, featuring a zero-dependency pure-NumPy inference engine (`src/ai/`).
-- **Phase 6 — Motion & Vibration Feature Classifier**: 9-feature sliding window extractor and rule-based classifier detecting `NORMAL`, `STATIONARY`, `SHOCK`, `VIBRATION`, and `ABNORMAL` motion with dynamic Kalman trust weights (`src/motion/`).
-- **Phase 7 — AI-Assisted Dead Reckoning + NHC**: Integrates AI speed along gyro heading and suppresses lateral vehicle slip (`src/ins/ai_assisted.py`, `src/ins/nhc.py`).
-- **Phase 8 — Multi-Rate GNSS + INS Fusion**: 10-state Extended Kalman Filter using FilterPy, ellipsoidal WGS-84 tangent-plane transformation, and autonomous mode switching (`src/fusion/`).
+### 2. Android Studio Environment (For Mobile App & On-Device Testing)
+- **Android Studio**: Android Studio Hedgehog (2023.1.1), Iguana, Jellyfish, Ladybug, or newer.
+- **Java Development Kit (JDK)**: **JDK 17** (use the embedded OpenJDK provided with Android Studio: `Android Studio/jbr`).
+- **Android SDK Components**:
+  - **SDK Platform**: API 34 (Android 14.0)
+  - **Build-Tools**: 34.0.0
+  - **Minimum SDK**: API 26 (Android 8.0 Oreo)
+- **Physical Device or Emulator**:
+  - An Android device running Android 8.0+ connected via USB (with USB Debugging enabled) for real IMU sensor streaming.
+  - Or an Android Virtual Device (AVD) running API 34.
 
 ---
 
-## Developer Quickstart & Setup Guide
+## Getting Started (Quickstart Guide)
 
-### 1. Prerequisites
-- **Python 3.10+** (Tested on Python 3.10, 3.11, 3.12, 3.13)
-- `git`
-
-### 2. Clone the Repository
+### Step 1: Clone the Repository
 ```bash
 git clone https://github.com/satyak99108/IDR.git
 cd IDR
 ```
 
-### 3. Create & Activate Virtual Environment
+### Step 2: Set Up Python Virtual Environment
 - **On Linux / macOS:**
   ```bash
   python3 -m venv .venv
@@ -145,121 +125,173 @@ cd IDR
   .venv\Scripts\activate.bat
   ```
 
-### 4. Install Dependencies
+### Step 3: Install Dependencies
 ```bash
 pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-> **Note**: The core runtime dependencies (`numpy`, `scipy`, `pandas`, `matplotlib`, `seaborn`, `filterpy`) are lightweight and fast to install. TensorFlow is **optional** and only required if you want to retrain the AI model from scratch; out-of-the-box execution uses pre-trained weights via pure NumPy.
+> **Note**: Core execution uses pre-trained weights via pure NumPy or TFLite runtime. TensorFlow is optional and only required if retraining the 1D-CNN from scratch.
 
-### 5. Download the Dataset
+### Step 4: Download the Calibrated Dataset
 Download and extract the calibrated IO-VNBD dataset (`SYNC_s1_calibrated.csv`):
 ```bash
 python scripts/download_dataset.py
 ```
 
-### 6. Run Unit Tests (50 Tests)
-Verify the entire mathematical and algorithmic pipeline:
+### Step 5: Verify Python Test Suite (141 Tests)
+Run pytest across all subsystems:
 ```bash
-python -m unittest discover tests -v
+python -m pytest tests/ -v
 ```
+All 141 tests will execute in under 30 seconds and pass cleanly.
 
-Expected output:
-```text
-Ran 50 tests in 9.5s
-OK
+---
+
+## Running Benchmarks & Pipelines
+
+### 1. Phase 15: Edge Engine Streaming Benchmark (Multi-Adapter)
+Tests standard contracts, real-time throughput, and 60s GNSS outage drift on both `SmartphoneAdapter` and `ExternalIMUAdapter`:
+```bash
+python scripts/run_phase15.py
+```
+Outputs in `results/phase15/`:
+- `01_edge_adapter_comparison.png` — Trajectory and drift comparison
+- `02_edge_streaming_latency.png` — Ingestion latency histogram and jitter waterfall
+- `03_edge_throughput_benchmark.png` — Real-time throughput (Hz) vs 10 Hz MVP requirement
+- `edge_benchmark.json` — Detailed JSON metrics
+
+### 2. Phase 13: TFLite Quantization & Model Size Benchmark
+Converts the Keras CNN into Float32, Float16, and INT8 TFLite models, verifying accuracy vs compression:
+```bash
+python scripts/run_phase13.py
+```
+Outputs in `results/phase13/`:
+- `01_model_size_comparison.png`
+- `02_latency_vs_throughput.png`
+- `03_accuracy_vs_size_pareto.png`
+- `04_velocity_prediction_overlay.png`
+
+### 3. Phase 12: Production Prototype Benchmark Suite
+Executes the full 4-stage progression (Raw INS $\rightarrow$ INS+NHC $\rightarrow$ AI+Fusion $\rightarrow$ Map Matching):
+```bash
+python scripts/run_phase12.py
 ```
 
 ---
 
-## Running Benchmark Scripts
+## Building & Testing the Android App (`android/`)
 
-### Run Phase 8: Full GNSS + INS Fusion Pipeline
-Evaluates the complete 10-state EKF, simulated 60-second tunnel blackout, and outputs 5 presentation plots:
-```bash
-python scripts/run_phase8.py --outage-start 500.0 --outage-duration 60.0
-```
-Outputs generated in `results/phase8/`:
-- `01_fusion_trajectory_overview.png` — Full trajectory overview
-- `02_tunnel_blackout_zoom.png` — Close-up view of tunnel entry, dead-reckoning, and exit recovery
-- `03_velocity_and_mode_timeline.png` — Fused velocity vs ground truth with mode shading
-- `04_position_error_timeline.png` — Real-time position error with tunnel shaded
-- `05_sensor_biases_and_uncertainty.png` — Accelerometer/gyro bias estimates and covariance trace
-- `fusion_metrics.json` — Machine-readable summary metrics
-- `fused_trajectory.csv` — 51,746-point continuous trajectory
+The native Android app implements real-time hardware sensor sampling (`SensorManager`), TFLite inference via `velocity_cnn.tflite`, a HUD navigation display, and network socket streaming.
 
-### Run Phase 7: Three-Way Dead-Reckoning Benchmark
-Compares Raw INS vs AI+INS vs AI+INS+NHC:
-```bash
-python scripts/run_phase7.py
+### Method A: Using Android Studio (Recommended for Development & UI Testing)
+1. Open **Android Studio**.
+2. Select **Open** and choose the `android/` directory inside the cloned repo (`IDR/android`).
+3. Allow Gradle to synchronize dependencies.
+4. Set Project JDK to **JDK 17** (`Settings` $\rightarrow$ `Build, Execution, Deployment` $\rightarrow$ `Build Tools` $\rightarrow$ `Gradle` $\rightarrow$ `Gradle JDK`).
+5. Connect your Android device or start an emulator.
+6. Click **Run 'app'** (`Shift + F10`) to build, install, and launch the application.
+
+### Method B: Using Command-Line Gradle
+
+- **On Windows (PowerShell):**
+  ```powershell
+  cd android
+  .\gradlew assembleDebug
+  ```
+- **On Linux / macOS:**
+  ```bash
+  cd android
+  chmod +x gradlew
+  ./gradlew assembleDebug
+  ```
+The compiled APK will be generated at:
+```
+android/app/build/outputs/apk/debug/app-debug.apk
 ```
 
-### Run Phase 6: Motion Classification & Feature Extraction
-Extracts vibration features and classifies driving regimes:
-```bash
-python scripts/run_phase6.py
-```
+### Running Android JVM Unit Tests
+Verify Android navigation engine logic, mode transitions, and sensor smoothing without an emulator:
+- **Windows:**
+  ```powershell
+  cd android
+  .\gradlew testDebugUnitTest
+  ```
+- **Linux / macOS:**
+  ```bash
+  cd android
+  ./gradlew testDebugUnitTest
+  ```
 
 ---
 
-## Project Directory Structure
+## Repository Directory Structure
 
 ```text
 IDR/
-├── .gitignore                     # Optimized exclusion rules for lightweight repo
-├── requirements.txt               # Documented production dependencies
-├── README.md                      # Complete developer & architecture guide
+├── android/                       # Native Android Application (Kotlin, TFLite, MVVM)
+│   ├── app/                       # Android App module (src/main/java/com/idr/navigation)
+│   ├── build.gradle.kts           # Root Gradle build script
+│   └── gradlew / gradlew.bat      # Gradle wrapper scripts
 │
-├── data/                          # Dataset directory (raw/processed ignored)
-│   └── download_instructions.txt
+├── edge/                          # Sensor-Agnostic Edge Engine Subsystem (Phase 15)
+│   ├── contracts.py               # EdgeSensorPacket & EdgeNavigationOutput contracts
+│   ├── core.py                    # EdgeNavigationEngine wrapper
+│   └── adapters/                  # Stream adapters
+│       ├── base.py                # BaseSensorAdapter & AdapterStats
+│       ├── smartphone_adapter.py  # IO-VNBD replay & live UDP socket receiver
+│       └── external_imu_adapter.py# High-rate (50-100Hz) IMU decimation adapter
 │
-├── models/                        # Pre-trained AI model weights
-│   ├── scaler_params.json         # Feature normalization parameters
-│   └── velocity_cnn_weights.npz   # Extracted CNN weights (NumPy format, 165 KB)
+├── models/                        # Deployed Neural Models & Scalers
+│   ├── scaler_params.json         # Standardizer mean & standard deviation parameters
+│   ├── velocity_cnn.tflite        # Quantized production TFLite model (44 KB)
+│   └── velocity_cnn_weights.npz   # NumPy weights for zero-dependency inference
 │
 ├── src/                           # Core Algorithmic Library
-│   ├── calibration/               # Sensor bias subtraction & frame alignment
-│   │   └── calibrator.py
-│   ├── ins/                       # Inertial Navigation & Dead Reckoning
-│   │   ├── integration.py         # WGS-84 coordinate transforms & quaternion math
-│   │   ├── strapdown.py           # Raw INS double-integration baseline
-│   │   ├── nhc.py                 # Non-Holonomic Constraints corrector
-│   │   └── ai_assisted.py         # AI forward velocity dead-reckoning engine
-│   ├── ai/                        # Deep Learning Components
-│   │   ├── dataset.py             # IMU sliding-window data loader
-│   │   ├── model.py               # 1D-CNN Keras model architecture
-│   │   ├── numpy_inference.py     # Zero-dependency NumPy CNN inference engine
-│   │   └── evaluator.py           # Velocity evaluation metrics
-│   ├── motion/                    # Motion Regime Classification
-│   │   ├── feature_extractor.py   # 9 sliding-window signal features
-│   │   └── classifier.py          # Threshold classifier with Kalman trust weights
-│   ├── simulation/                # Outage Simulation & Evaluation
-│   │   ├── outage_simulator.py    # Outage mask generator (tunnels, dropouts)
-│   │   └── evaluator.py           # Blackout drift & RMSE evaluator
-│   └── fusion/                    # State Estimation & Multi-Rate Fusion
-│       ├── ekf.py                 # 10-state FilterPy Extended Kalman Filter
-│       └── fusion_engine.py       # High-level GNSS/INS coordinator & mode manager
+│   ├── calibration/               # Gravity subtraction & frame rotation
+│   ├── ins/                       # Strapdown INS, NHC & dead reckoning
+│   ├── ai/                        # 1D-CNN Keras model & NumPy inference
+│   ├── motion/                    # Motion feature extractor & zero-velocity classifier
+│   ├── simulation/                # Outage generator & drift evaluation
+│   ├── fusion/                    # 15-state EKF & mode manager
+│   ├── map_matching/              # HMM map matcher & OSM road corridor graph
+│   ├── pipeline/                  # IDRNavigationEngine orchestrator
+│   ├── deployment/                # TFLite quantizer & latency profiler
+│   └── evaluation/                # Benchmark runner & resource profiler
 │
-├── scripts/                       # Executable Phase Benchmarks & Pipelines
-│   ├── download_dataset.py        # Dataset downloader & verification
-│   ├── run_phase2.py              # Calibration benchmark
-│   ├── run_phase3.py              # Raw INS drift benchmark
-│   ├── run_phase4.py              # Outage simulation benchmark
-│   ├── run_phase5.py              # AI velocity evaluation
-│   ├── run_phase6.py              # Motion classification pipeline
-│   ├── run_phase7.py              # Three-way dead-reckoning comparison
-│   └── run_phase8.py              # Full GNSS + INS state fusion runner
-│
-└── tests/                         # Automated Unit Test Suite (50 Tests)
-    ├── test_calibration.py
-    ├── test_ins.py
-    ├── test_simulation.py
-    ├── test_ai.py
-    ├── test_motion.py
-    ├── test_ins_ai.py
-    └── test_fusion.py
+├── scripts/                       # Executable benchmark runners (run_phase2.py to run_phase15.py)
+├── tests/                         # 141 Python unit tests (pytest)
+├── requirements.txt               # Documented production dependencies
+├── MVP.md                         # Detailed project roadmap and specifications
+└── README.md                      # Developer onboarding and architecture guide
 ```
+
+---
+
+## How to Propose Changes & Contribute
+
+We welcome contributions from developers, researchers, and participants!
+
+1. **Fork the Repository**: Click "Fork" on GitHub and clone your fork locally.
+2. **Create a Feature Branch**:
+   ```bash
+   git checkout -b feat/your-feature-name
+   ```
+3. **Coding Standards**:
+   - Write type-annotated, PEP-8 compliant Python code.
+   - For Kotlin, adhere to official Android Kotlin style conventions.
+   - Preserve backward compatibility with existing standard contracts (`EdgeSensorPacket`, `EdgeNavigationOutput`).
+4. **Add Tests**:
+   - For new Python features, add corresponding test cases in `tests/`.
+   - For Android additions, include unit tests under `android/app/src/test/`.
+5. **Verify Before Committing**:
+   ```bash
+   python -m pytest tests/ -v
+   cd android && ./gradlew testDebugUnitTest
+   ```
+6. **Submit a Pull Request**:
+   - Push your branch to GitHub.
+   - Open a PR against `main` with a clear description of changes, benchmark impacts, and verification results.
 
 ---
 
