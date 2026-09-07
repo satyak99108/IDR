@@ -17,11 +17,15 @@ Exports:
 """
 
 from .ekf import NavigationEKF
-from .fusion_engine import GNSSINSFusionEngine, FusionState, NavigationMode
+from .mode_manager import NavigationMode, NavigationModeManager, ModeTransitionEvent, SmoothJumpMitigator
+from .fusion_engine import GNSSINSFusionEngine, FusionState
 
 __all__ = [
     "NavigationEKF",
     "GNSSINSFusionEngine",
     "FusionState",
     "NavigationMode",
+    "NavigationModeManager",
+    "ModeTransitionEvent",
+    "SmoothJumpMitigator",
 ]
