@@ -47,6 +47,7 @@ models/*.h5
 models/*.keras
 models/*.tflite
 models/*.onnx
+models/variants/
 # Preserve lightweight pre-extracted numpy weights & scaler params for zero-setup execution
 !models/velocity_cnn_weights.npz
 !models/scaler_params.json
