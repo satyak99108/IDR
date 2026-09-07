@@ -77,4 +77,6 @@ desktop.ini
 # Mobile Build Artifacts & Reference Repos
 android/app/build/
 android/.gradle/
+android/local.properties
+android/.cxx/
 mobile-app-ui-design/

@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Dark slate palette (60/30/10 design system) -->
+    <color name="bg_dark">#0F172A</color>
+    <color name="surface_card">#1E293B</color>
+    <color name="surface_card_border">#334155</color>
+    <color name="text_primary">#F8FAFC</color>
+    <color name="text_secondary">#94A3B8</color>
+
+    <!-- Accent & Status colors -->
+    <color name="status_gnss">#10B981</color>        <!-- Emerald -->
+    <color name="status_dead_reckoning">#F59E0B</color> <!-- Amber -->
+    <color name="status_recovery">#06B6D4</color>      <!-- Cyan -->
+    <color name="status_outage">#EF4444</color>        <!-- Coral Red -->
+
+    <!-- Buttons -->
+    <color name="btn_tunnel_bg">#DC2626</color>
+    <color name="btn_restore_bg">#059669</color>
+</resources>

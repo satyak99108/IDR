@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">IDR Navigation</string>
+    <string name="title_telemetry">IDR NAVIGATION CORE</string>
+    <string name="speed_unit">km/h</string>
+    <string name="default_speed">0.0</string>
+    <string name="label_mode">MODE:</string>
+    <string name="label_gnss">GNSS:</string>
+    <string name="label_confidence">CONFIDENCE:</string>
+    <string name="label_outage_timer">OUTAGE:</string>
+
+    <string name="gnss_active">ACTIVE (3D FIX)</string>
+    <string name="gnss_lost">TUNNEL BLACKOUT</string>
+
+    <string name="btn_kill_gnss">ENTER TUNNEL (KILL GNSS)</string>
+    <string name="btn_restore_gnss">EXIT TUNNEL (RESTORE GNSS)</string>
+
+    <string name="btn_mode_live">LIVE SENSORS</string>
+    <string name="btn_mode_replay">IO-VNBD REPLAY</string>
+    <string name="btn_reset">RESET</string>
+</resources>
