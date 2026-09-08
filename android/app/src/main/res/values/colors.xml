@@ -16,4 +16,6 @@
     <!-- Buttons -->
     <color name="btn_tunnel_bg">#DC2626</color>
     <color name="btn_restore_bg">#059669</color>
+    <color name="fab_active_tint">#38BDF8</color>
+    <color name="fab_inactive_tint">#94A3B8</color>
 </resources>

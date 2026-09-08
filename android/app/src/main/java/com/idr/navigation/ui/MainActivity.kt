@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.os.Bundle
+import android.view.MotionEvent
 import android.view.View
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
@@ -108,6 +109,30 @@ class MainActivity : AppCompatActivity() {
                 title = "Vehicle Position"
             }
             overlayManager.add(vehicleMarker)
+
+            // Detect user manual touch drag to immediately release vehicle auto-centering
+            setOnTouchListener { _, event ->
+                if (event.actionMasked == MotionEvent.ACTION_MOVE || event.actionMasked == MotionEvent.ACTION_DOWN) {
+                    if (isMapCenteredOnVehicle) {
+                        setMapAutoCentering(false)
+                    }
+                }
+                false
+            }
+
+            // Detect user manual panning/scrolling to release lock on vehicle
+            addMapListener(object : org.osmdroid.events.MapListener {
+                override fun onScroll(event: org.osmdroid.events.ScrollEvent?): Boolean {
+                    if (isMapCenteredOnVehicle) {
+                        setMapAutoCentering(false)
+                    }
+                    return false
+                }
+
+                override fun onZoom(event: org.osmdroid.events.ZoomEvent?): Boolean {
+                    return false
+                }
+            })
         }
     }
 
@@ -152,8 +177,17 @@ class MainActivity : AppCompatActivity() {
 
         // Recenter Map
         binding.fabRecenter.setOnClickListener {
-            isMapCenteredOnVehicle = true
+            setMapAutoCentering(true)
             lastGeoPoint?.let { binding.mapView.controller.animateTo(it) }
+        }
+    }
+
+    private fun setMapAutoCentering(centered: Boolean) {
+        isMapCenteredOnVehicle = centered
+        if (centered) {
+            binding.fabRecenter.imageTintList = ContextCompat.getColorStateList(this, R.color.fab_active_tint)
+        } else {
+            binding.fabRecenter.imageTintList = ContextCompat.getColorStateList(this, R.color.fab_inactive_tint)
         }
     }
 

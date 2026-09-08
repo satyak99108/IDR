@@ -179,8 +179,9 @@
         android:layout_marginEnd="16dp"
         android:layout_marginBottom="16dp"
         app:backgroundTint="@color/surface_card"
-        app:tint="@color/text_primary"
+        app:tint="@color/fab_active_tint"
         app:srcCompat="@android:drawable/ic_menu_mylocation"
+        android:contentDescription="@string/recenter_map"
         app:fabSize="mini"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintBottom_toTopOf="@id/cardJudgeControls" />

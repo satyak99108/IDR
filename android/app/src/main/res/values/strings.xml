@@ -18,4 +18,5 @@
     <string name="btn_mode_live">LIVE SENSORS</string>
     <string name="btn_mode_replay">IO-VNBD REPLAY</string>
     <string name="btn_reset">RESET</string>
+    <string name="recenter_map">Recenter on Vehicle</string>
 </resources>
