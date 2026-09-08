@@ -64,7 +64,12 @@ class DeadReckoningEngine(
     private var pDownM: Double = 0.0
 
     private var headingDeg: Double = 0.0
+    val currentHeadingDeg: Double
+        get() = headingDeg
+
     private var speedMs: Double = 0.0
+    val currentSpeedMs: Double
+        get() = speedMs
 
     private var lastTimestampMs: Long = 0
     private var totalDistanceM: Double = 0.0
@@ -132,9 +137,19 @@ class DeadReckoningEngine(
             pEastM = 0.0
             prevGnssLat = gnssLat
             prevGnssLon = gnssLon
-            if (gnssCourseDeg != null && !gnssCourseDeg.isNaN() && (gnssCourseDeg > 0.0 || (gnssSpeedMs ?: 0.0) > 1.0)) {
+            if (gnssCourseDeg != null && !gnssCourseDeg.isNaN() && (gnssSpeedMs ?: 0.0) > 1.0) {
                 headingDeg = gnssCourseDeg
                 hasInitialHeading = true
+            }
+        }
+
+        // Update heading from valid GNSS course if available and active
+        if (hasGnss && !isSimulatedOutage && gnssCourseDeg != null && !gnssCourseDeg.isNaN()) {
+            if (gnssCourseDeg > 0.0 || (gnssSpeedMs ?: 0.0) > 1.0) {
+                if (!hasInitialHeading) {
+                    headingDeg = gnssCourseDeg
+                    hasInitialHeading = true
+                }
             }
         }
 
@@ -169,17 +184,40 @@ class DeadReckoningEngine(
         // ── Step 4: Determine forward velocity — physics-consistent chain ──
         // Priority 1: GNSS speed when available and GNSS is active
         // Priority 2: AI model forward velocity prediction
-        // Priority 3: Realistic vehicle coastdown deceleration (rolling resistance/aero drag: ~0.4 m/s²)
+        // Priority 3: Strapdown forward linear acceleration integration (axVeh * dt) clamped to realistic limits
+        // Priority 4: Realistic vehicle coastdown deceleration (rolling resistance/aero drag: ~0.4 m/s²)
         val gnssSpeedValid = hasGnss && !isSimulatedOutage &&
                 gnssSpeedMs != null && !gnssSpeedMs.isNaN() && gnssSpeedMs >= 0.0
 
         val rawSpeedMs: Double = when {
             gnssSpeedValid -> gnssSpeedMs!!
 
-            aiForwardSpeedMs > 0.1f -> aiForwardSpeedMs.toDouble()
+            aiForwardSpeedMs > 0.5f -> aiForwardSpeedMs.toDouble()
+
+            isSimulatedOutage -> {
+                // In tunnel outage: integrate forward linear acceleration with physical bounds
+                val effectiveDt = if (dt > 0.0) dt else 0.05
+                // Deadband for accelerometer noise (0.15 m/s²)
+                val forwardAccel = if (abs(axVeh) > 0.15f) axVeh.toDouble().coerceIn(-4.0, 3.0) else 0.0
+                
+                if (speedMs > 0.1) {
+                    if (forwardAccel != 0.0) {
+                        max(0.0, speedMs + forwardAccel * effectiveDt)
+                    } else {
+                        // Gentle coastdown rolling resistance
+                        val decel = COASTDOWN_DECEL_MS2 * effectiveDt
+                        max(0.0, speedMs - decel)
+                    }
+                } else if (forwardAccel > 0.3) {
+                    // Vehicle accelerates forward from standstill
+                    max(0.0, forwardAccel * effectiveDt)
+                } else {
+                    0.0
+                }
+            }
 
             else -> {
-                // Natural vehicle coastdown deceleration instead of brutal exponential decay
+                // Natural vehicle coastdown deceleration
                 val decel = COASTDOWN_DECEL_MS2 * (if (dt > 0.0) dt else 0.05)
                 max(0.0, speedMs - decel)
             }
@@ -200,8 +238,9 @@ class DeadReckoningEngine(
             stationaryCount = 0
         }
 
+        // ZUPT: Require speed to be already low (< 1.0 m/s) so active driving through a smooth tunnel is not cut off
         val isStationary =
-            stationaryCount >= STATIONARY_CONFIRM_SAMPLES && rawSpeedMs < STATIONARY_SPEED_THRESHOLD
+            stationaryCount >= STATIONARY_CONFIRM_SAMPLES && rawSpeedMs < 1.0
 
         if (isStationary) {
             speedMs = 0.0

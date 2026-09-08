@@ -222,10 +222,12 @@ class MainActivity : AppCompatActivity() {
         // Run AI forward velocity estimation from real phone IMU data.
         // During tunnel/outage, GNSS is null so the TFLite model drives velocity
         // purely from accelerometer + gyroscope — movement only if the device actually moves.
+        // Fallback speed preserves current vehicle momentum when GNSS is temporarily absent.
+        val fallbackSpeed = (frame.gnssSpeedMs ?: deadReckoningEngine.currentSpeedMs).toFloat()
         val estimatedSpeedMs = velocityEstimator.estimateVelocity(
             ax = frame.ax, ay = frame.ay, az = frame.az,
             gx = frame.gx, gy = frame.gy, gz = frame.gz,
-            fallbackKinematicSpeedMs = (frame.gnssSpeedMs ?: 0.0).toFloat()
+            fallbackKinematicSpeedMs = fallbackSpeed
         )
 
         // Process dead reckoning step
