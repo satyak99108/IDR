@@ -87,8 +87,8 @@ class MainActivity : AppCompatActivity() {
         // Set up Judge Controls & Buttons
         setupJudgeControls()
 
-        // Default to IO-VNBD Replay mode for reliable instant demonstration
-        setSensorSource(isReplay = true)
+        // Default to LIVE hardware sensors — map only moves when the device physically moves
+        setSensorSource(isReplay = false)
     }
 
     private fun setupMapView() {
@@ -194,8 +194,15 @@ class MainActivity : AppCompatActivity() {
     private fun setSensorSource(isReplay: Boolean) {
         activeProvider?.stop()
 
+        // Clean slate to prevent stale coordinate cross-contamination
+        deadReckoningEngine.reset()
+        routePolyline.actualPoints.clear()
+        lastGeoPoint = null
+        binding.mapView.invalidate()
+
         if (isReplay) {
             activeProvider = replayProvider
+            replayProvider.resetReplay()
             binding.btnToggleSource.text = getString(R.string.btn_mode_live)
             binding.tvSourceBadge.text = "IO-VNBD REPLAY"
             binding.tvSourceBadge.setTextColor(Color.parseColor("#38BDF8"))
@@ -212,7 +219,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun onSensorFrameReceived(frame: SensorFrame) {
-        // Run AI forward velocity estimation
+        // Run AI forward velocity estimation from real phone IMU data.
+        // During tunnel/outage, GNSS is null so the TFLite model drives velocity
+        // purely from accelerometer + gyroscope — movement only if the device actually moves.
         val estimatedSpeedMs = velocityEstimator.estimateVelocity(
             ax = frame.ax, ay = frame.ay, az = frame.az,
             gx = frame.gx, gy = frame.gy, gz = frame.gz,
@@ -245,6 +254,13 @@ class MainActivity : AppCompatActivity() {
             binding.tvSpeed.text = String.format("%.1f", output.speedKmh)
 
             // Navigation Mode
+            if (!output.hasValidFix) {
+                binding.tvNavMode.text = "ACQUIRING GNSS..."
+                binding.tvNavMode.setTextColor(Color.parseColor("#94A3B8"))
+                binding.tvConfidence.text = "Confidence: --%"
+                return@runOnUiThread
+            }
+
             binding.tvNavMode.text = output.mode.displayName
             binding.tvNavMode.setTextColor(Color.parseColor(output.mode.badgeColorHex))
 
@@ -259,8 +275,9 @@ class MainActivity : AppCompatActivity() {
                 binding.tvOutageTimer.visibility = View.GONE
             }
 
-            // Map update
+            // Map update: only plot points once a valid geodetic fix exists (guards against Africa 0,0)
             val currentPoint = GeoPoint(output.latDeg, output.lonDeg)
+            val isFirstPoint = (lastGeoPoint == null)
             lastGeoPoint = currentPoint
 
             // Update Vehicle Marker position & heading rotation
@@ -276,7 +293,7 @@ class MainActivity : AppCompatActivity() {
             }
 
             routePolyline.addPoint(currentPoint)
-            if (isMapCenteredOnVehicle) {
+            if (isMapCenteredOnVehicle || isFirstPoint) {
                 binding.mapView.controller.setCenter(currentPoint)
             }
             binding.mapView.invalidate()

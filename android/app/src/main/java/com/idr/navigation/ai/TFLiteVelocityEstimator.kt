@@ -108,8 +108,13 @@ class TFLiteVelocityEstimator(
         outputBuffer.rewind()
         val predictedSpeedMs = outputBuffer.float
 
-        // Clamp to non-negative vehicle forward speed
-        return max(0.0f, predictedSpeedMs)
+        // Guard against NaN/Infinity from degenerate model input
+        if (predictedSpeedMs.isNaN() || predictedSpeedMs.isInfinite()) {
+            return max(0.0f, fallbackKinematicSpeedMs)
+        }
+
+        // Clamp to physically reasonable vehicle speed range [0, 55 m/s ≈ 200 km/h]
+        return predictedSpeedMs.coerceIn(0.0f, 55.0f)
     }
 
     fun close() {

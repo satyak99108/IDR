@@ -63,10 +63,12 @@ class NavigationModeManager(
                     recoveryStartTimeS = timestampS
                     isJustEnteredRecovery = true
 
-                    // Discrepancy between dead reckoning before recovery and returning GNSS fix
+                    // Discrepancy between the dead-reckoned trajectory point and returning GNSS fix.
+                    // Blending this offset over recoveryDurationS ensures zero abrupt teleportation.
                     dn0 = lastDrNorth - currentNorthM
                     de0 = lastDrEast - currentEastM
-                } else if (!gnssValid) {
+                } else {
+                    // Update dead reckoning coordinates while still in blackout
                     lastDrNorth = currentNorthM
                     lastDrEast = currentEastM
                 }

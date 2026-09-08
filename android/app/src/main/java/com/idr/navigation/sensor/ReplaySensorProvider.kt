@@ -7,6 +7,10 @@ import org.json.JSONArray
 /**
  * Replays pre-recorded calibrated IO-VNBD trip sequences bundled in assets/demo_trip.json.
  * Enables deterministic indoor testing and evaluation without needing an active moving vehicle.
+ *
+ * During a simulated GNSS outage, GNSS fields are stripped from each frame but the
+ * real recorded IMU data (accel/gyro) continues flowing — dead reckoning is driven by
+ * the recorded inertial data, not by synthetic movement.
  */
 class ReplaySensorProvider(
     private val context: Context,
@@ -69,7 +73,7 @@ class ReplaySensorProvider(
                 val original = samples[currentIndex]
                 val currentTs = System.currentTimeMillis()
 
-                // Apply simulated tunnel blackout if active
+                // Apply simulated tunnel blackout if active — strip GNSS but keep real IMU data
                 val frameToEmit = if (simulatedOutage) {
                     original.copy(
                         timestampMs = currentTs,
