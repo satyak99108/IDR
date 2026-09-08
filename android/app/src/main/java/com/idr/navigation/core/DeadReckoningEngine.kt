@@ -1,15 +1,57 @@
 package com.idr.navigation.core
 
+import android.util.Log
 import kotlin.math.*
 
 /**
  * Android Navigation Core Engine.
- * Combines AI forward velocity estimation, gyroscope heading integration,
+ *
+ * Combines GNSS speed, AI forward velocity estimation, gyroscope heading integration,
  * Non-Holonomic Constraints (NHC), GNSS blending, and smooth jump mitigation.
+ *
+ * ### Corrected Speed Data Flow
+ * ```
+ * GNSS speed (primary when available, m/s)
+ *      ↓ fallback
+ * AI TFLite velocity prediction (primary during DR, m/s)
+ *      ↓ fallback
+ * Exponential decay toward zero (prevents accumulation)
+ *      ↓
+ * Stationary ZUPT override (consecutive samples, accelMag < threshold)
+ *      ↓
+ * EMA smoothing (α=0.3)
+ *      ↓
+ * speedMs × 3.6 → speedKmh (single canonical conversion)
+ * ```
  */
 class DeadReckoningEngine(
     val modeManager: NavigationModeManager = NavigationModeManager()
 ) {
+    companion object {
+        private const val TAG = "IDR_DREngine"
+
+        /** Enable/disable verbose velocity debug logging. Set false for production. */
+        var DEBUG_VELOCITY = true
+
+        // ---- Stationary detection thresholds (designed for gravity-free linear accel) ----
+        /** Linear acceleration magnitude below this → likely stationary (m/s²). */
+        private const val STATIONARY_ACCEL_THRESHOLD = 0.5
+        /** Yaw rate magnitude below this → likely stationary (rad/s). */
+        private const val STATIONARY_GYRO_THRESHOLD = 0.08
+        /** Speed must be below this for ZUPT to trigger (m/s ≈ 5.4 km/h). */
+        private const val STATIONARY_SPEED_THRESHOLD = 1.5
+        /** Consecutive stationary samples required before ZUPT fires. */
+        private const val STATIONARY_CONFIRM_SAMPLES = 3
+
+        // ---- Velocity filtering ----
+        /** EMA smoothing factor (0 = no change, 1 = no smoothing). */
+        private const val VELOCITY_EMA_ALPHA = 0.3
+        /** Decay factor per step when neither GNSS nor AI provides velocity. */
+        private const val VELOCITY_DECAY_FACTOR = 0.85
+        /** Maximum physically reasonable vehicle speed (m/s) ≈ 200 km/h. */
+        private const val MAX_SPEED_MS = 55.0
+    }
+
     // Reference Origin for Flat-Earth NED
     var originLatDeg: Double? = null
         private set
@@ -32,13 +74,16 @@ class DeadReckoningEngine(
     // Gyro bias compensation (estimated during stationary periods)
     private var gyroBiasZ: Double = 0.0
 
+    // Stationary detector: consecutive-sample counter
+    private var stationaryCount: Int = 0
+
     /**
      * Process one incoming sensor/navigation sample.
      *
      * @param timestampMs sample timestamp in epoch millis
-     * @param axVeh acceleration forward (vehicle frame, m/s^2)
-     * @param ayVeh acceleration lateral (vehicle frame, m/s^2)
-     * @param azVeh acceleration vertical (vehicle frame, m/s^2)
+     * @param axVeh linear acceleration forward (vehicle frame, m/s², **gravity removed**)
+     * @param ayVeh linear acceleration lateral (vehicle frame, m/s², **gravity removed**)
+     * @param azVeh linear acceleration vertical (vehicle frame, m/s², **gravity removed**)
      * @param gzVeh yaw rate (vehicle frame, rad/s)
      * @param aiForwardSpeedMs velocity estimated by TFLite model (m/s)
      * @param gnssLat GNSS latitude if available, else null
@@ -62,15 +107,18 @@ class DeadReckoningEngine(
     ): NavigationOutput {
         val timestampS = timestampMs / 1000.0
 
-        // Calculate dt
+        // ── Step 1: Calculate dt from actual timestamps ──
+        // No hardcoded rate assumption. First sample gets dt=0 (no integration).
         val dt = if (lastTimestampMs > 0 && timestampMs > lastTimestampMs) {
-            min(0.2, (timestampMs - lastTimestampMs) / 1000.0)
+            val rawDt = (timestampMs - lastTimestampMs) / 1000.0
+            // Clamp to prevent spikes from lifecycle pauses (max 200ms = 5 Hz floor)
+            min(0.2, rawDt)
         } else {
-            0.1 // default 10 Hz
+            0.0 // First sample: no integration, no speed kick
         }
         lastTimestampMs = timestampMs
 
-        // 1. Initialize origin if not yet established
+        // ── Step 2: Initialize origin if not yet established ──
         val hasGnss = gnssLat != null && gnssLon != null && !gnssLat.isNaN() && !gnssLon.isNaN()
         if (originLatDeg == null && hasGnss) {
             originLatDeg = gnssLat
@@ -85,37 +133,73 @@ class DeadReckoningEngine(
         val origLat = originLatDeg ?: 0.0
         val origLon = originLonDeg ?: 0.0
 
-        // 2. Integrate Heading from Gyroscope (yaw rate gz)
-        val gzCompensated = gzVeh.toDouble() - gyroBiasZ
-        val dHeadingDeg = Math.toDegrees(gzCompensated * dt)
-        headingDeg = CoordinatesNED.wrapAngle360(headingDeg + dHeadingDeg)
-
-        // 3. Determine Forward Velocity (AI model + NHC)
-        speedMs = if (aiForwardSpeedMs > 0.1f) {
-            aiForwardSpeedMs.toDouble()
-        } else {
-            // Kinematic fallback
-            max(0.0, speedMs + axVeh * dt)
+        // ── Step 3: Integrate heading from gyroscope (yaw rate gz) ──
+        if (dt > 0.0) {
+            val gzCompensated = gzVeh.toDouble() - gyroBiasZ
+            val dHeadingDeg = Math.toDegrees(gzCompensated * dt)
+            headingDeg = CoordinatesNED.wrapAngle360(headingDeg + dHeadingDeg)
         }
 
-        // Apply stationary zero-velocity update (ZUPT)
-        val isStationary = abs(axVeh) < 0.15f && abs(ayVeh) < 0.15f && abs(gzVeh) < 0.05f && speedMs < 0.5
+        // ── Step 4: Determine forward velocity — corrected priority chain ──
+        // Priority: GNSS speed → AI prediction → decay toward zero
+        val gnssSpeedValid = hasGnss && !isSimulatedOutage &&
+                gnssSpeedMs != null && !gnssSpeedMs.isNaN() && gnssSpeedMs >= 0.0
+
+        val rawSpeedMs: Double = when {
+            // Priority 1: GNSS speed when available — most accurate source
+            gnssSpeedValid -> gnssSpeedMs!!
+
+            // Priority 2: AI model prediction during DR or when GNSS speed unavailable
+            aiForwardSpeedMs > 0.05f -> aiForwardSpeedMs.toDouble()
+
+            // Priority 3: Decay toward zero — prevents unbounded accumulation
+            // (replaces the broken `max(0, speed + ax*dt)` fallback)
+            else -> speedMs * VELOCITY_DECAY_FACTOR
+        }
+
+        // ── Step 5: Stationary detection (ZUPT) ──
+        // Uses gravity-free linear acceleration magnitude + gyro magnitude.
+        // Requires consecutive stationary samples to avoid false triggers from single noisy readings.
+        val accelMag = sqrt(
+            (axVeh.toDouble()).pow(2) + (ayVeh.toDouble()).pow(2) + (azVeh.toDouble()).pow(2)
+        )
+        val isLikelyStationary =
+            accelMag < STATIONARY_ACCEL_THRESHOLD && abs(gzVeh) < STATIONARY_GYRO_THRESHOLD
+
+        if (isLikelyStationary) {
+            stationaryCount++
+        } else {
+            stationaryCount = 0
+        }
+
+        val isStationary =
+            stationaryCount >= STATIONARY_CONFIRM_SAMPLES && rawSpeedMs < STATIONARY_SPEED_THRESHOLD
+
         if (isStationary) {
             speedMs = 0.0
+            // Estimate gyro bias during stationary periods for heading drift compensation
+            gyroBiasZ = gyroBiasZ * 0.95 + gzVeh.toDouble() * 0.05
+        } else if (dt > 0.0) {
+            // EMA smoothing — reduces jitter while maintaining responsiveness
+            speedMs = (1.0 - VELOCITY_EMA_ALPHA) * speedMs + VELOCITY_EMA_ALPHA * rawSpeedMs
         }
 
-        // 4. Dead Reckoning Position Propagation with NHC
-        // In vehicle frame: v_forward = speedMs, v_lateral = 0 (NHC), v_vertical = 0
-        val headingRad = Math.toRadians(headingDeg)
-        val vNorth = speedMs * cos(headingRad)
-        val vEast = speedMs * sin(headingRad)
+        // Clamp to physically reasonable range [0, MAX_SPEED_MS]
+        speedMs = speedMs.coerceIn(0.0, MAX_SPEED_MS)
 
-        val deltaM = speedMs * dt
-        pNorthM += vNorth * dt
-        pEastM += vEast * dt
-        totalDistanceM += deltaM
+        // ── Step 6: Dead Reckoning position propagation with NHC ──
+        // v_lateral = 0 (NHC), v_vertical = 0 (NHC)
+        if (dt > 0.0) {
+            val headingRad = Math.toRadians(headingDeg)
+            val vNorth = speedMs * cos(headingRad)
+            val vEast = speedMs * sin(headingRad)
 
-        // 5. Update Navigation Mode Manager
+            pNorthM += vNorth * dt
+            pEastM += vEast * dt
+            totalDistanceM += speedMs * dt
+        }
+
+        // ── Step 7: Update Navigation Mode Manager ──
         val mode = modeManager.update(
             timestampS = timestampS,
             hasGnssSample = hasGnss,
@@ -124,7 +208,7 @@ class DeadReckoningEngine(
             currentEastM = pEastM
         )
 
-        // 6. GNSS Blending (when fix is valid and mode allows)
+        // ── Step 8: GNSS Blending (when fix is valid and mode allows) ──
         if (hasGnss && !isSimulatedOutage && origLat != 0.0) {
             val gnssNed = CoordinatesNED.geodeticToNed(
                 latDeg = gnssLat!!,
@@ -150,12 +234,12 @@ class DeadReckoningEngine(
             }
         }
 
-        // 7. Apply Smooth Jump Mitigation Offset during Recovery
+        // ── Step 9: Smooth Jump Mitigation during Recovery ──
         val (dnSmooth, deSmooth) = modeManager.getJumpOffsets(timestampS)
         val outNorth = pNorthM + dnSmooth
         val outEast = pEastM + deSmooth
 
-        // 8. Convert output NED back to Geodetic (Lat, Lon)
+        // ── Step 10: Convert NED → Geodetic ──
         val geodetic = CoordinatesNED.nedToGeodetic(
             northM = outNorth,
             eastM = outEast,
@@ -163,11 +247,11 @@ class DeadReckoningEngine(
             originLonDeg = origLon
         )
 
-        // 9. Outage telemetry tracking
+        // ── Step 11: Outage telemetry ──
         val isOutage = (mode == NavigationMode.DEAD_RECKONING)
         if (isOutage) {
             if (outageStartMs == 0L) outageStartMs = timestampMs
-            outageDistanceM += deltaM
+            if (dt > 0.0) outageDistanceM += speedMs * dt
         } else {
             outageStartMs = 0L
             outageDistanceM = 0.0
@@ -176,19 +260,30 @@ class DeadReckoningEngine(
             (timestampMs - outageStartMs) / 1000.0
         } else 0.0
 
-        // 10. Estimate confidence score (10-99%)
+        // ── Step 12: Confidence score ──
         val confidencePct = when (mode) {
             NavigationMode.GNSS_INS -> 95
             NavigationMode.RECOVERY -> 85
             NavigationMode.DEGRADED_GNSS -> 70
             NavigationMode.DEAD_RECKONING -> {
-                // Confidence gently decays with outage duration
                 val decay = min(50.0, outageDurationS * 0.8)
                 max(35, (85.0 - decay).toInt())
             }
         }
 
+        // ── Single canonical conversion: m/s → km/h ──
         val speedKmh = speedMs * 3.6
+
+        // ── Debug logging ──
+        if (DEBUG_VELOCITY) {
+            Log.d(TAG, String.format(
+                "dt=%.3f mode=%s stat=%b accelMag=%.3f " +
+                        "gnssSpd=%.1f aiSpd=%.2f rawSpd=%.2f smoothSpd=%.2f kmh=%.1f",
+                dt, mode.name, isStationary, accelMag,
+                gnssSpeedMs ?: -1.0, aiForwardSpeedMs.toDouble(),
+                rawSpeedMs, speedMs, speedKmh
+            ))
+        }
 
         return NavigationOutput(
             timestampMs = timestampMs,
@@ -216,6 +311,8 @@ class DeadReckoningEngine(
         outageStartMs = 0L
         originLatDeg = null
         originLonDeg = null
+        stationaryCount = 0
+        gyroBiasZ = 0.0
         modeManager.reset()
     }
 }
