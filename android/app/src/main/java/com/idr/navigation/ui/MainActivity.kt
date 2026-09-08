@@ -87,8 +87,8 @@ class MainActivity : AppCompatActivity() {
         // Set up Judge Controls & Buttons
         setupJudgeControls()
 
-        // Default to IO-VNBD Replay mode for reliable instant demonstration
-        setSensorSource(isReplay = true)
+        // Default to LIVE hardware sensors — map only moves when the device physically moves
+        setSensorSource(isReplay = false)
     }
 
     private fun setupMapView() {
@@ -212,18 +212,14 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun onSensorFrameReceived(frame: SensorFrame) {
-        // During tunnel auto-drive, use injected synthetic speed directly (bypasses TFLite model).
-        // This ensures the vehicle marker moves with realistically ramping speed as soon as
-        // "Enter Tunnel (KILL GNSS)" is pressed, regardless of IMU signal quality.
-        val estimatedSpeedMs: Float = if (frame.autoDriveSpeedMs != null) {
-            frame.autoDriveSpeedMs
-        } else {
-            velocityEstimator.estimateVelocity(
-                ax = frame.ax, ay = frame.ay, az = frame.az,
-                gx = frame.gx, gy = frame.gy, gz = frame.gz,
-                fallbackKinematicSpeedMs = (frame.gnssSpeedMs ?: 0.0).toFloat()
-            )
-        }
+        // Run AI forward velocity estimation from real phone IMU data.
+        // During tunnel/outage, GNSS is null so the TFLite model drives velocity
+        // purely from accelerometer + gyroscope — movement only if the device actually moves.
+        val estimatedSpeedMs = velocityEstimator.estimateVelocity(
+            ax = frame.ax, ay = frame.ay, az = frame.az,
+            gx = frame.gx, gy = frame.gy, gz = frame.gz,
+            fallbackKinematicSpeedMs = (frame.gnssSpeedMs ?: 0.0).toFloat()
+        )
 
         // Process dead reckoning step
         val isOutage = activeProvider?.isOutageSimulated() ?: false
