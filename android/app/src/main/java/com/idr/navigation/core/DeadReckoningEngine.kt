@@ -46,8 +46,8 @@ class DeadReckoningEngine(
         // ---- Velocity filtering ----
         /** EMA smoothing factor (0 = no change, 1 = no smoothing). */
         private const val VELOCITY_EMA_ALPHA = 0.3
-        /** Decay factor per step when neither GNSS nor AI provides velocity. */
-        private const val VELOCITY_DECAY_FACTOR = 0.85
+        /** Natural coastdown deceleration (m/s²) due to rolling resistance and aero drag when no throttle/GNSS is applied. */
+        private const val COASTDOWN_DECEL_MS2 = 0.4
         /** Maximum physically reasonable vehicle speed (m/s) ≈ 200 km/h. */
         private const val MAX_SPEED_MS = 55.0
     }
@@ -76,6 +76,11 @@ class DeadReckoningEngine(
 
     // Stationary detector: consecutive-sample counter
     private var stationaryCount: Int = 0
+
+    // Track whether initial heading has been learned
+    private var hasInitialHeading: Boolean = false
+    private var prevGnssLat: Double? = null
+    private var prevGnssLon: Double? = null
 
     /**
      * Process one incoming sensor/navigation sample.
@@ -125,9 +130,30 @@ class DeadReckoningEngine(
             originLonDeg = gnssLon
             pNorthM = 0.0
             pEastM = 0.0
-            if (gnssCourseDeg != null && !gnssCourseDeg.isNaN()) {
+            prevGnssLat = gnssLat
+            prevGnssLon = gnssLon
+            if (gnssCourseDeg != null && !gnssCourseDeg.isNaN() && (gnssCourseDeg > 0.0 || (gnssSpeedMs ?: 0.0) > 1.0)) {
                 headingDeg = gnssCourseDeg
+                hasInitialHeading = true
             }
+        }
+
+        // Learn initial heading from GNSS movement displacement if course is 0.0/missing
+        if (!hasInitialHeading && hasGnss && prevGnssLat != null && prevGnssLon != null) {
+            val dLat = Math.toRadians(gnssLat!! - prevGnssLat!!)
+            val dLon = Math.toRadians(gnssLon!! - prevGnssLon!!)
+            val dNorth = dLat * 6378137.0
+            val dEast = dLon * 6378137.0 * cos(Math.toRadians(gnssLat))
+            val dist = sqrt(dNorth * dNorth + dEast * dEast)
+            if (dist > 1.5) { // moved more than 1.5 metres
+                headingDeg = CoordinatesNED.wrapAngle360(Math.toDegrees(atan2(dEast, dNorth)))
+                hasInitialHeading = true
+                prevGnssLat = gnssLat
+                prevGnssLon = gnssLon
+            }
+        } else if (hasGnss) {
+            prevGnssLat = gnssLat
+            prevGnssLon = gnssLon
         }
 
         val origLat = originLatDeg ?: 0.0
@@ -140,26 +166,28 @@ class DeadReckoningEngine(
             headingDeg = CoordinatesNED.wrapAngle360(headingDeg + dHeadingDeg)
         }
 
-        // ── Step 4: Determine forward velocity — corrected priority chain ──
-        // Priority: GNSS speed → AI prediction → decay toward zero
+        // ── Step 4: Determine forward velocity — physics-consistent chain ──
+        // Priority 1: GNSS speed when available and GNSS is active
+        // Priority 2: AI model forward velocity prediction
+        // Priority 3: Realistic vehicle coastdown deceleration (rolling resistance/aero drag: ~0.4 m/s²)
         val gnssSpeedValid = hasGnss && !isSimulatedOutage &&
                 gnssSpeedMs != null && !gnssSpeedMs.isNaN() && gnssSpeedMs >= 0.0
 
         val rawSpeedMs: Double = when {
-            // Priority 1: GNSS speed when available — most accurate source
             gnssSpeedValid -> gnssSpeedMs!!
 
-            // Priority 2: AI model prediction during DR or when GNSS speed unavailable
-            aiForwardSpeedMs > 0.05f -> aiForwardSpeedMs.toDouble()
+            aiForwardSpeedMs > 0.1f -> aiForwardSpeedMs.toDouble()
 
-            // Priority 3: Decay toward zero — prevents unbounded accumulation
-            // (replaces the broken `max(0, speed + ax*dt)` fallback)
-            else -> speedMs * VELOCITY_DECAY_FACTOR
+            else -> {
+                // Natural vehicle coastdown deceleration instead of brutal exponential decay
+                val decel = COASTDOWN_DECEL_MS2 * (if (dt > 0.0) dt else 0.05)
+                max(0.0, speedMs - decel)
+            }
         }
 
         // ── Step 5: Stationary detection (ZUPT) ──
-        // Uses gravity-free linear acceleration magnitude + gyro magnitude.
-        // Requires consecutive stationary samples to avoid false triggers from single noisy readings.
+        // Triggered only when linear acceleration and yaw rate are both quiescent
+        // AND estimated speed is small.
         val accelMag = sqrt(
             (axVeh.toDouble()).pow(2) + (ayVeh.toDouble()).pow(2) + (azVeh.toDouble()).pow(2)
         )
@@ -182,14 +210,17 @@ class DeadReckoningEngine(
         } else if (dt > 0.0) {
             // EMA smoothing — reduces jitter while maintaining responsiveness
             speedMs = (1.0 - VELOCITY_EMA_ALPHA) * speedMs + VELOCITY_EMA_ALPHA * rawSpeedMs
+        } else if (speedMs == 0.0 && rawSpeedMs > 0.0) {
+            speedMs = rawSpeedMs
         }
 
         // Clamp to physically reasonable range [0, MAX_SPEED_MS]
         speedMs = speedMs.coerceIn(0.0, MAX_SPEED_MS)
 
         // ── Step 6: Dead Reckoning position propagation with NHC ──
-        // v_lateral = 0 (NHC), v_vertical = 0 (NHC)
-        if (dt > 0.0) {
+        // Only propagate if origin has been established; otherwise wait for first fix
+        val hasOrigin = (originLatDeg != null && originLonDeg != null)
+        if (dt > 0.0 && hasOrigin) {
             val headingRad = Math.toRadians(headingDeg)
             val vNorth = speedMs * cos(headingRad)
             val vEast = speedMs * sin(headingRad)
@@ -227,8 +258,8 @@ class DeadReckoningEngine(
             pEastM = (1.0 - alpha) * pEastM + alpha * gnssNed.eastM
 
             // Align heading with GNSS course when moving fast enough
-            if (gnssCourseDeg != null && !gnssCourseDeg.isNaN() && speedMs > 3.0) {
-                val beta = 0.08
+            if (gnssCourseDeg != null && !gnssCourseDeg.isNaN() && speedMs > 2.0) {
+                val beta = 0.12
                 val dCourse = CoordinatesNED.wrapAngle180(gnssCourseDeg - headingDeg)
                 headingDeg = CoordinatesNED.wrapAngle360(headingDeg + beta * dCourse)
             }
@@ -240,12 +271,16 @@ class DeadReckoningEngine(
         val outEast = pEastM + deSmooth
 
         // ── Step 10: Convert NED → Geodetic ──
-        val geodetic = CoordinatesNED.nedToGeodetic(
-            northM = outNorth,
-            eastM = outEast,
-            originLatDeg = origLat,
-            originLonDeg = origLon
-        )
+        val geodetic = if (hasOrigin) {
+            CoordinatesNED.nedToGeodetic(
+                northM = outNorth,
+                eastM = outEast,
+                originLatDeg = origLat,
+                originLonDeg = origLon
+            )
+        } else {
+            CoordinatesNED.GeodeticPoint(0.0, 0.0, 0.0)
+        }
 
         // ── Step 11: Outage telemetry ──
         val isOutage = (mode == NavigationMode.DEAD_RECKONING)
@@ -261,14 +296,16 @@ class DeadReckoningEngine(
         } else 0.0
 
         // ── Step 12: Confidence score ──
-        val confidencePct = when (mode) {
-            NavigationMode.GNSS_INS -> 95
-            NavigationMode.RECOVERY -> 85
-            NavigationMode.DEGRADED_GNSS -> 70
-            NavigationMode.DEAD_RECKONING -> {
+        val confidencePct = when {
+            !hasOrigin -> 0
+            mode == NavigationMode.GNSS_INS -> 95
+            mode == NavigationMode.RECOVERY -> 85
+            mode == NavigationMode.DEGRADED_GNSS -> 70
+            mode == NavigationMode.DEAD_RECKONING -> {
                 val decay = min(50.0, outageDurationS * 0.8)
                 max(35, (85.0 - decay).toInt())
             }
+            else -> 50
         }
 
         // ── Single canonical conversion: m/s → km/h ──
@@ -295,7 +332,8 @@ class DeadReckoningEngine(
             confidencePct = confidencePct,
             isOutageActive = isOutage,
             outageDurationS = round(outageDurationS * 10.0) / 10.0,
-            distanceTravelledM = totalDistanceM
+            distanceTravelledM = totalDistanceM,
+            hasValidFix = hasOrigin
         )
     }
 
@@ -311,6 +349,9 @@ class DeadReckoningEngine(
         outageStartMs = 0L
         originLatDeg = null
         originLonDeg = null
+        hasInitialHeading = false
+        prevGnssLat = null
+        prevGnssLon = null
         stationaryCount = 0
         gyroBiasZ = 0.0
         modeManager.reset()

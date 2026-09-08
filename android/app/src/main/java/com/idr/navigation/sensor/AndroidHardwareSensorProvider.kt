@@ -130,15 +130,55 @@ class AndroidHardwareSensorProvider(
         gyro?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
 
         // --- GNSS Registration ---
+        // 1. Immediately seed latestLocation from last known position (GPS or Network)
+        // This avoids starting with null coordinates or defaulting to (0,0) before first live fix.
         try {
-            locationManager.requestLocationUpdates(
-                LocationManager.GPS_PROVIDER,
-                500L,   // min interval ms
-                0f,     // min distance m
-                this
-            )
+            val lastGps = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER)
+            val lastNet = locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
+            latestLocation = when {
+                lastGps != null && lastNet != null -> {
+                    if (lastGps.time >= lastNet.time) lastGps else lastNet
+                }
+                lastGps != null -> lastGps
+                else -> lastNet
+            }
+            if (latestLocation != null) {
+                Log.i(TAG, "Seeded initial location from last known: lat=${latestLocation?.latitude}, lon=${latestLocation?.longitude}")
+            }
         } catch (e: SecurityException) {
-            Log.w(TAG, "GNSS permission not granted", e)
+            Log.w(TAG, "GNSS permission not granted for last known location", e)
+        }
+
+        // 2. Request updates from GPS_PROVIDER
+        try {
+            if (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
+                locationManager.requestLocationUpdates(
+                    LocationManager.GPS_PROVIDER,
+                    500L,   // min interval ms
+                    0f,     // min distance m
+                    this
+                )
+            }
+        } catch (e: SecurityException) {
+            Log.w(TAG, "GPS permission not granted", e)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to request GPS updates", e)
+        }
+
+        // 3. Fallback to NETWORK_PROVIDER for fast indoor fix / rough initial lock
+        try {
+            if (locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
+                locationManager.requestLocationUpdates(
+                    LocationManager.NETWORK_PROVIDER,
+                    1000L,
+                    0f,
+                    this
+                )
+            }
+        } catch (e: SecurityException) {
+            Log.w(TAG, "Network location permission not granted", e)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to request Network location updates", e)
         }
 
         handler.post(emitRunnable)

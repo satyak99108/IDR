@@ -25,5 +25,6 @@ data class NavigationOutput(
     val outageDurationS: Double = 0.0,
     val distanceTravelledM: Double = 0.0,
     val estimatedDriftM: Double = 0.0,
-    val estimatedDriftPct: Double = 0.0
+    val estimatedDriftPct: Double = 0.0,
+    val hasValidFix: Boolean = true
 )
