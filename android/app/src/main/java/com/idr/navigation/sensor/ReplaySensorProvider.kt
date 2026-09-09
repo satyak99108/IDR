@@ -54,6 +54,38 @@ class ReplaySensorProvider(
                     )
                 )
             }
+
+            // If recorded gnss_course is missing or flat 0.0 across all frames,
+            // compute the ground-truth course bearing from consecutive reference / GNSS coordinates
+            val needsCourseComputation = samples.all { (it.gnssCourseDeg ?: 0.0) == 0.0 }
+            if (needsCourseComputation && samples.isNotEmpty()) {
+                var lastBearing = 0.0
+                // Find initial bearing from first points with displacement
+                for (i in 0 until samples.size) {
+                    val current = samples[i]
+                    val lat1 = current.refLat ?: current.gnssLat
+                    val lon1 = current.refLon ?: current.gnssLon
+
+                    // Look ahead 5-10 frames (~0.5-1s) for clear displacement
+                    val aheadIdx = kotlin.math.min(samples.size - 1, i + 10)
+                    val ahead = samples[aheadIdx]
+                    val lat2 = ahead.refLat ?: ahead.gnssLat
+                    val lon2 = ahead.refLon ?: ahead.gnssLon
+
+                    if (lat1 != null && lon1 != null && lat2 != null && lon2 != null) {
+                        val dLat = Math.toRadians(lat2 - lat1)
+                        val dLon = Math.toRadians(lon2 - lon1)
+                        val dNorth = dLat * 6378137.0
+                        val dEast = dLon * 6378137.0 * kotlin.math.cos(Math.toRadians(lat1))
+                        val dist = kotlin.math.sqrt(dNorth * dNorth + dEast * dEast)
+                        if (dist > 1.0) {
+                            lastBearing = (Math.toDegrees(kotlin.math.atan2(dEast, dNorth)) + 360.0) % 360.0
+                        }
+                    }
+
+                    samples[i] = current.copy(gnssCourseDeg = lastBearing)
+                }
+            }
         } catch (e: Exception) {
             e.printStackTrace()
         }
